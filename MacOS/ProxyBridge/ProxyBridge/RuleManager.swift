@@ -85,7 +85,15 @@ struct RuleManager {
         session: NETunnelProviderSession,
         completion: @escaping (Bool, Int) -> Void
     ) {
-        let rules = UserDefaults.standard.array(forKey: "proxyRules") as? [[String: Any]] ?? []
+        let d = UserDefaults.standard
+        let activeProfile = d.string(forKey: "activeProfile") ?? "Default"
+        var rules = d.array(forKey: "proxyRules") as? [[String: Any]] ?? []
+        if rules.isEmpty {
+            rules = d.array(forKey: "profile.\(activeProfile).proxyRules") as? [[String: Any]] ?? []
+            if !rules.isEmpty {
+                d.set(rules, forKey: "proxyRules")
+            }
+        }
         guard !rules.isEmpty else {
             completion(true, 0)
             return

@@ -186,6 +186,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         }
         profiles = names
         activeProfile = d.string(forKey: "activeProfile") ?? names.first ?? "Default"
+        loadWorkingSet(from: activeProfile)
     }
 
     // copy the live working keys into a profile's snapshot
