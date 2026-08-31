@@ -270,6 +270,7 @@ struct ProxyRule: Codable {
     }
 }
 
+@objc(AppProxyProvider)
 class AppProxyProvider: NETransparentProxyProvider {
     
     // one log entry, kept as an enum so we don't allocate a dictionary per line,

@@ -3,6 +3,7 @@ import NetworkExtension
 // Intercepts system DNS, forwards each query to the real resolver, and records
 // the resulting IP -> domain mapping so the transparent proxy can match rules by
 // domain. DoH/DoT that an app does itself is not visible here (by design).
+@objc(DNSProxyProvider)
 class DNSProxyProvider: NEDNSProxyProvider {
     private var sessions = Set<NWUDPSession>()
     private let sessionsLock = NSLock()
