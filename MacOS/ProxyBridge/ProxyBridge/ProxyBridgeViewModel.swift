@@ -433,25 +433,11 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
                 return
             }
             
-            let d = UserDefaults.standard
-            let activeProfile = d.string(forKey: "activeProfile") ?? "Default"
-            var rawRules = d.array(forKey: "proxyRules") as? [[String: Any]] ?? []
-            if rawRules.isEmpty {
-                rawRules = d.array(forKey: "profile.\(activeProfile).proxyRules") as? [[String: Any]] ?? []
-            }
-            let configsDict: [[String: Any]] = self.proxyConfigs.map { config in
-                var dict: [String: Any] = [
-                    "id": config.id,
-                    "proxyType": config.type,
-                    "proxyHost": config.host,
-                    "proxyPort": config.port
-                ]
-                if let u = config.username { dict["proxyUsername"] = u }
-                if let p = config.password { dict["proxyPassword"] = p }
-                return dict
-            }
-
-            let manager = managers?.first ?? NETransparentProxyManager()
+            let allManagers = managers ?? []
+            let manager = allManagers.first { m in
+                (m.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == self.extensionIdentifier
+            } ?? NETransparentProxyManager()
+            
             manager.localizedDescription = "ProxyBridge Transparent Proxy"
             manager.isEnabled = true
             
@@ -579,7 +565,12 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             guard let self = self else { return }
             
             NETransparentProxyManager.loadAllFromPreferences { managers, error in
-                if let manager = managers?.first {
+                let allManagers = managers ?? []
+                let manager = allManagers.first { m in
+                    (m.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == self.extensionIdentifier
+                } ?? allManagers.first
+                
+                if let manager = manager {
                     (manager.connection as? NETunnelProviderSession)?.stopTunnel()
                     self.isProxyActive = false
                     self.logTimer?.invalidate()
