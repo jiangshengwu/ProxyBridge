@@ -387,7 +387,69 @@ class AppProxyProvider: NETransparentProxyProvider {
         logQueueLock.unlock()
     }
 
+    private func applyProxyConfigs(_ configs: [[String: Any]]) {
+        proxyLock.lock()
+        storedProxyConfigs = [:]
+        for configDict in configs {
+            guard let id = configDict["id"] as? String,
+                  let type = configDict["proxyType"] as? String,
+                  let host = configDict["proxyHost"] as? String,
+                  let port = configDict["proxyPort"] as? Int else { continue }
+            storedProxyConfigs[id] = StoredProxyConfig(
+                type: type, host: host, port: port,
+                username: configDict["proxyUsername"] as? String,
+                password: configDict["proxyPassword"] as? String
+            )
+        }
+        proxyLock.unlock()
+        log("Proxy configs loaded: \(storedProxyConfigs.count) config(s)")
+    }
+
+    private func applyRules(_ rawRules: [[String: Any]]) {
+        rulesLock.lock()
+        rules.removeAll()
+        nextRuleId = 1
+        for ruleDict in rawRules {
+            if let ruleData = try? JSONSerialization.data(withJSONObject: ruleDict),
+               var rule = try? JSONDecoder().decode(ProxyRule.self, from: ruleData) {
+                rule.ruleId = nextRuleId
+                nextRuleId += 1
+                rules.append(rule)
+            } else {
+                let processNames = ruleDict["processNames"] as? String ?? ""
+                let targetHosts = ruleDict["targetHosts"] as? String ?? ""
+                let targetPorts = ruleDict["targetPorts"] as? String ?? ""
+                let protoStr = (ruleDict["protocol"] as? String ?? ruleDict["ruleProtocol"] as? String ?? "BOTH").uppercased()
+                let proto = RuleProtocol(rawValue: protoStr) ?? .both
+                let action = ruleDict["action"] as? String ?? ruleDict["ruleAction"] as? String ?? "DIRECT"
+                let enabled = ruleDict["enabled"] as? Bool ?? true
+                let rule = ProxyRule(ruleId: nextRuleId, processNames: processNames, targetHosts: targetHosts, targetPorts: targetPorts, ruleProtocol: proto, action: action, enabled: enabled)
+                nextRuleId += 1
+                rules.append(rule)
+            }
+        }
+        let count = rules.count
+        rulesLock.unlock()
+        log("Loaded \(count) rule(s) into extension")
+    }
+
     override func startProxy(options: [String : Any]?, completionHandler: @escaping (Error?) -> Void) {
+        var initialDict = options ?? [:]
+        if let protoConfig = (self.protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration {
+            for (k, v) in protoConfig {
+                if initialDict[k] == nil {
+                    initialDict[k] = v
+                }
+            }
+        }
+        
+        if let configs = initialDict["configs"] as? [[String: Any]] {
+            self.applyProxyConfigs(configs)
+        }
+        if let rawRules = initialDict["rules"] as? [[String: Any]] {
+            self.applyRules(rawRules)
+        }
+
         let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
         
         let allTrafficRule = NENetworkRule(
@@ -480,27 +542,27 @@ class AppProxyProvider: NETransparentProxyProvider {
             }
         case "setProxyConfigs":
             if let configs = message["configs"] as? [[String: Any]] {
-                proxyLock.lock()
-                storedProxyConfigs = [:]
-                for configDict in configs {
-                    guard let id = configDict["id"] as? String,
-                          let type = configDict["proxyType"] as? String,
-                          let host = configDict["proxyHost"] as? String,
-                          let port = configDict["proxyPort"] as? Int else { continue }
-                    storedProxyConfigs[id] = StoredProxyConfig(
-                        type: type, host: host, port: port,
-                        username: configDict["proxyUsername"] as? String,
-                        password: configDict["proxyPassword"] as? String
-                    )
-                }
-                proxyLock.unlock()
-                log("Proxy configs updated: \(storedProxyConfigs.count) config(s)")
+                applyProxyConfigs(configs)
             }
             completionHandler?(try? JSONSerialization.data(withJSONObject: ["status": "ok"]))
 
         case "addRule":
+            var decodedRule: ProxyRule? = nil
             if let ruleData = try? JSONSerialization.data(withJSONObject: message),
-               var rule = try? JSONDecoder().decode(ProxyRule.self, from: ruleData) {
+               let r = try? JSONDecoder().decode(ProxyRule.self, from: ruleData) {
+                decodedRule = r
+            } else {
+                let processNames = message["processNames"] as? String ?? ""
+                let targetHosts = message["targetHosts"] as? String ?? ""
+                let targetPorts = message["targetPorts"] as? String ?? ""
+                let protoStr = (message["protocol"] as? String ?? message["ruleProtocol"] as? String ?? "BOTH").uppercased()
+                let proto = RuleProtocol(rawValue: protoStr) ?? .both
+                let action = message["action"] as? String ?? message["ruleAction"] as? String ?? "DIRECT"
+                let enabled = message["enabled"] as? Bool ?? true
+                decodedRule = ProxyRule(ruleId: 0, processNames: processNames, targetHosts: targetHosts, targetPorts: targetPorts, ruleProtocol: proto, action: action, enabled: enabled)
+            }
+
+            if var rule = decodedRule {
                 rulesLock.lock()
                 rule.ruleId = nextRuleId
                 nextRuleId += 1
