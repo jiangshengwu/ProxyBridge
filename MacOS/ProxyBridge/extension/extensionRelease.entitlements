@@ -13,5 +13,15 @@
 		<string>url-filter-provider</string>
 		<string>hotspot-provider</string>
 	</array>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>group.com.interceptsuite.ProxyBridge</string>
+	</array>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
+	<true/>
 </dict>
 </plist>

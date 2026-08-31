@@ -98,6 +98,12 @@ struct RuleManager {
                 d.set(rules, forKey: "proxyRules")
             }
         }
+        if rules.isEmpty {
+            rules = d.array(forKey: "profile.Default.proxyRules") as? [[String: Any]] ?? []
+            if !rules.isEmpty {
+                d.set(rules, forKey: "proxyRules")
+            }
+        }
         guard !rules.isEmpty else {
             completion(true, 0)
             return

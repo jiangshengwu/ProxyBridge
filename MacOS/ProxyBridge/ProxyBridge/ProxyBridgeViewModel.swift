@@ -97,7 +97,6 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         loadTrafficLoggingSetting()
         loadProfiles()
         loadProxyConfig()
-        syncSharedConfig()
         NEDNSProxyManager.shared().removeFromPreferences { _ in }
         NotificationCenter.default.addObserver(
             self,
@@ -106,27 +105,6 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             object: nil
         )
         installAndStartProxy()
-    }
-
-    func syncSharedConfig() {
-        let d = UserDefaults.standard
-        let active = d.string(forKey: "activeProfile") ?? "Default"
-        var rawRules = d.array(forKey: "proxyRules") as? [[String: Any]] ?? []
-        if rawRules.isEmpty {
-            rawRules = d.array(forKey: "profile.\(active).proxyRules") as? [[String: Any]] ?? []
-        }
-        let configsDict: [[String: Any]] = self.proxyConfigs.map { config in
-            var dict: [String: Any] = [
-                "id": config.id,
-                "proxyType": config.type,
-                "proxyHost": config.host,
-                "proxyPort": config.port
-            ]
-            if let u = config.username { dict["proxyUsername"] = u }
-            if let p = config.password { dict["proxyPassword"] = p }
-            return dict
-        }
-        SharedConfigStore.shared.save(rules: rawRules, configs: configsDict, trafficLoggingEnabled: isTrafficLoggingEnabled)
     }
 
     @objc private func occlusionChanged() {
@@ -157,7 +135,6 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     func toggleTrafficLogging() {
         isTrafficLoggingEnabled.toggle()
         UserDefaults.standard.set(isTrafficLoggingEnabled, forKey: "trafficLoggingEnabled")
-        syncSharedConfig()
         sendTrafficLoggingToExtension(isTrafficLoggingEnabled)
         updatePollingState()
     }
@@ -242,7 +219,6 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     private func applyActiveProfile() {
         loadProxyConfig()
         loadTrafficLoggingSetting()
-        syncSharedConfig()
         // window-close behaviour is read live from the key, only startup needs applying
         LoginItem.applyToSystem(UserDefaults.standard.bool(forKey: "runAtStartup"))
         if let session = tunnelSession {
@@ -371,7 +347,6 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         if let data = try? JSONEncoder().encode(proxyConfigs) {
             UserDefaults.standard.set(data, forKey: "proxyConfigs")
         }
-        syncSharedConfig()
     }
 
     func addProxyConfig(_ config: ProxyConfig) {
@@ -492,16 +467,21 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         self.tunnelSession = session
         self.isProxyActive = true
         
-        self.syncSharedConfig()
-        self.setupLogPolling(session: session)
-        
-        let d = UserDefaults.standard
-        let activeProfile = d.string(forKey: "activeProfile") ?? "Default"
-        var rules = d.array(forKey: "proxyRules") as? [[String: Any]] ?? []
-        if rules.isEmpty {
-            rules = d.array(forKey: "profile.\(activeProfile).proxyRules") as? [[String: Any]] ?? []
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self = self else { return }
+            self.setupLogPolling(session: session)
+            if !self.proxyConfigs.isEmpty {
+                self.sendProxyConfigsToExtension(session: session)
+            }
+            
+            RuleManager.loadRulesFromUserDefaults(session: session) { [weak self] success, count in
+                if success && count > 0 {
+                    self?.addLog("INFO", "Loaded \(count) rule(s) from local storage into extension")
+                } else {
+                    self?.addLog("INFO", "Extension rules synced (count: \(count))")
+                }
+            }
         }
-        self.addLog("INFO", "Loaded \(rules.count) rule(s) from local storage into extension")
     }
 
     private func reloadAndStartTunnel(manager: NETransparentProxyManager) {
@@ -640,21 +620,32 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     }
     
     private func pollLogs() {
-        let logs = SharedLogStore.shared.drainNewEntries()
-        guard !logs.isEmpty else { return }
-
-        DispatchQueue.main.async {
-            var newConnections: [ConnectionLog] = []
-            var newActivity: [ActivityLog] = []
-            for log in logs {
-                if log["type"] == "connection" {
-                    if let c = self.makeConnectionLog(log) { newConnections.append(c) }
-                } else {
-                    if let a = self.makeActivityLog(log) { newActivity.append(a) }
-                }
+        guard let session = tunnelSession else { return }
+        
+        let message = ["action": "getLogs"]
+        guard let data = try? JSONSerialization.data(withJSONObject: message) else { return }
+        
+        try? session.sendProviderMessage(data) { [weak self] response in
+            guard let self = self,
+                  let responseData = response,
+                  let logs = try? JSONSerialization.jsonObject(with: responseData) as? [[String: String]],
+                  !logs.isEmpty else {
+                return
             }
-            self.appendConnections(newConnections)
-            self.appendActivity(newActivity)
+
+            DispatchQueue.main.async {
+                var newConnections: [ConnectionLog] = []
+                var newActivity: [ActivityLog] = []
+                for log in logs {
+                    if log["type"] == "connection" {
+                        if let c = self.makeConnectionLog(log) { newConnections.append(c) }
+                    } else {
+                        if let a = self.makeActivityLog(log) { newActivity.append(a) }
+                    }
+                }
+                self.appendConnections(newConnections)
+                self.appendActivity(newActivity)
+            }
         }
     }
 
@@ -748,7 +739,6 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     
     func clearConnections() {
         connections.removeAll()
-        SharedLogStore.shared.clear()
     }
     
     func clearActivityLogs() {
