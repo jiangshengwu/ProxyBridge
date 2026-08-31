@@ -458,10 +458,6 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             let providerProtocol = NETunnelProviderProtocol()
             providerProtocol.providerBundleIdentifier = self.extensionIdentifier
             providerProtocol.serverAddress = "ProxyBridge"
-            providerProtocol.providerConfiguration = [
-                "rules": rawRules,
-                "configs": configsDict
-            ]
             manager.protocolConfiguration = providerProtocol
             
             manager.saveToPreferences { saveError in
@@ -471,11 +467,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
                 }
                 
                 self.addLog("INFO", "Configuration saved")
-                let startOptions: [String: NSObject] = [
-                    "rules": rawRules as NSArray,
-                    "configs": configsDict as NSArray
-                ]
-                self.reloadAndStartTunnel(manager: manager, options: startOptions)
+                self.reloadAndStartTunnel(manager: manager)
             }
         }
     }
@@ -507,7 +499,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         }
     }
 
-    private func reloadAndStartTunnel(manager: NETransparentProxyManager, options: [String: NSObject]? = nil) {
+    private func reloadAndStartTunnel(manager: NETransparentProxyManager) {
         manager.loadFromPreferences { [weak self] loadError in
             guard let self = self else { return }
 
@@ -557,7 +549,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             }
 
             do {
-                try session.startTunnel(options: options)
+                try session.startTunnel()
                 self.isProxyActive = true
                 self.addLog("INFO", "Proxy tunnel started")
                 handleStatusChange(status: session.status)
