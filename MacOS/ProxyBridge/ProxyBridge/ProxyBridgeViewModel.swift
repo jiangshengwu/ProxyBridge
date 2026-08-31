@@ -203,24 +203,39 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     }
 
     // copy the live working keys into a profile's snapshot
-    private func flushWorkingSet(to name: String) {
+    func flushWorkingSet(to name: String? = nil) {
+        let profileName = name ?? activeProfile
         let d = UserDefaults.standard
-        d.set(d.data(forKey: "proxyConfigs"), forKey: profileConfigsKey(name))
-        d.set(d.array(forKey: "proxyRules"), forKey: profileRulesKey(name))
-        d.set(isTrafficLoggingEnabled, forKey: profileLoggingKey(name))
-        d.set(d.bool(forKey: "closeToMenuBar"), forKey: profileCloseKey(name))
-        d.set(d.bool(forKey: "runAtStartup"), forKey: profileStartupKey(name))
+        if let configsData = try? JSONEncoder().encode(proxyConfigs) {
+            d.set(configsData, forKey: profileConfigsKey(profileName))
+            d.set(configsData, forKey: "proxyConfigs")
+        } else if let configsData = d.data(forKey: "proxyConfigs") {
+            d.set(configsData, forKey: profileConfigsKey(profileName))
+        }
+        
+        if let rulesArray = d.array(forKey: "proxyRules") {
+            d.set(rulesArray, forKey: profileRulesKey(profileName))
+        }
+        d.set(isTrafficLoggingEnabled, forKey: profileLoggingKey(profileName))
+        d.set(d.bool(forKey: "closeToMenuBar"), forKey: profileCloseKey(profileName))
+        d.set(d.bool(forKey: "runAtStartup"), forKey: profileStartupKey(profileName))
     }
 
     // load a profile's snapshot into the live working keys
     private func loadWorkingSet(from name: String) {
         let d = UserDefaults.standard
-        if let data = d.data(forKey: profileConfigsKey(name)) {
+        if let data = d.data(forKey: profileConfigsKey(name)), !data.isEmpty {
             d.set(data, forKey: "proxyConfigs")
-        } else {
-            d.removeObject(forKey: "proxyConfigs")
+        } else if let data = d.data(forKey: "proxyConfigs"), !data.isEmpty {
+            d.set(data, forKey: profileConfigsKey(name))
         }
-        d.set(d.array(forKey: profileRulesKey(name)) ?? [], forKey: "proxyRules")
+        
+        if let rules = d.array(forKey: profileRulesKey(name)), !rules.isEmpty {
+            d.set(rules, forKey: "proxyRules")
+        } else if let rules = d.array(forKey: "proxyRules"), !rules.isEmpty {
+            d.set(rules, forKey: profileRulesKey(name))
+        }
+        
         // traffic logging is per profile, default on when the snapshot has none
         d.set(d.object(forKey: profileLoggingKey(name)) as? Bool ?? true, forKey: "trafficLoggingEnabled")
         // window + startup behaviour are per profile too, default off
@@ -358,7 +373,9 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
 
     private func saveProxyConfigs() {
         if let data = try? JSONEncoder().encode(proxyConfigs) {
-            UserDefaults.standard.set(data, forKey: "proxyConfigs")
+            let d = UserDefaults.standard
+            d.set(data, forKey: "proxyConfigs")
+            d.set(data, forKey: profileConfigsKey(activeProfile))
         }
     }
 
@@ -394,7 +411,10 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
                 changed = true
             }
             if changed {
-                UserDefaults.standard.set(saved, forKey: "proxyRules")
+                let d = UserDefaults.standard
+                d.set(saved, forKey: "proxyRules")
+                d.set(saved, forKey: profileRulesKey(activeProfile))
+                LocalIPCClient.shared.syncRules(saved) { _, _ in }
                 if let session = tunnelSession {
                     RuleManager.resyncRules(session: session) { _, _ in }
                 }

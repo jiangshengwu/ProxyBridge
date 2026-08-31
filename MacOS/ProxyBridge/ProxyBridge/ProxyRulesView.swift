@@ -297,14 +297,25 @@ struct ProxyRulesView: View {
     
     // rules live in UserDefaults on the gui side, the extension is just a mirror
     private func loadRules() {
-        let dicts = UserDefaults.standard.array(forKey: "proxyRules") as? [[String: Any]] ?? []
+        let d = UserDefaults.standard
+        let active = viewModel.activeProfile
+        var dicts = d.array(forKey: "proxyRules") as? [[String: Any]] ?? []
+        if dicts.isEmpty {
+            dicts = d.array(forKey: "profile.\(active).proxyRules") as? [[String: Any]] ?? []
+        }
+        if dicts.isEmpty {
+            dicts = d.array(forKey: "profile.Default.proxyRules") as? [[String: Any]] ?? []
+        }
         rules = dicts.map { ProxyRule(dict: $0) }
     }
 
     // persist the current list and push it to the extension if the tunnel is up
     private func saveAndSync() {
         let dicts = rules.map { $0.toDict() }
-        UserDefaults.standard.set(dicts, forKey: "proxyRules")
+        let d = UserDefaults.standard
+        d.set(dicts, forKey: "proxyRules")
+        let active = viewModel.activeProfile
+        d.set(dicts, forKey: "profile.\(active).proxyRules")
         LocalIPCClient.shared.syncRules(dicts) { _, _ in }
         if let session = viewModel.tunnelSession {
             RuleManager.resyncRules(session: session) { _, _ in }

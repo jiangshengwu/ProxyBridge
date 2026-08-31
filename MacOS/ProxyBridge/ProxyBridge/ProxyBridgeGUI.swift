@@ -299,10 +299,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func quitApp() {
+        AppDelegate.viewModel?.flushWorkingSet()
         NSApp.terminate(nil)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        AppDelegate.viewModel?.flushWorkingSet()
         // Clear extension memory before app quits
         AppDelegate.viewModel?.stopProxy()
 
