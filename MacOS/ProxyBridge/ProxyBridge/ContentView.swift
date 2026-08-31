@@ -1,11 +1,17 @@
 import SwiftUI
 import AppKit
 
-enum ConnectionFilter: String, CaseIterable, Identifiable {
-    case all = "ALL"
+enum RoutingFilter: String, CaseIterable, Identifiable {
     case proxied = "PROXIED"
     case direct = "DIRECT"
     case reject = "REJECT"
+
+    var id: String { rawValue }
+}
+
+enum ProtocolFilter: String, CaseIterable, Identifiable {
+    case tcp = "TCP"
+    case udp = "UDP"
 
     var id: String { rawValue }
 }
@@ -35,7 +41,8 @@ struct ContentView: View {
     @State private var selectedTab = 0
     @State private var connectionSearchText = ""
     @State private var activitySearchText = ""
-    @State private var selectedConnectionFilter: ConnectionFilter = .all
+    @State private var selectedRoutingFilter: RoutingFilter? = nil
+    @State private var selectedProtocolFilter: ProtocolFilter? = nil
     
     var body: some View {
         VStack(spacing: 0) {
@@ -80,7 +87,8 @@ struct ContentView: View {
                     connections: filteredConnections,
                     allConnections: viewModel.connections,
                     searchText: $connectionSearchText,
-                    selectedFilter: $selectedConnectionFilter,
+                    selectedRoutingFilter: $selectedRoutingFilter,
+                    selectedProtocolFilter: $selectedProtocolFilter,
                     onClear: viewModel.clearConnections
                 )
             } else {
@@ -96,15 +104,24 @@ struct ContentView: View {
     private var filteredConnections: [ProxyBridgeViewModel.ConnectionLog] {
         let q = connectionSearchText
         return viewModel.connections.filter { c in
-            switch selectedConnectionFilter {
-            case .all:
-                break
-            case .proxied:
-                if !c.isProxied { return false }
-            case .direct:
-                if !c.isDirect { return false }
-            case .reject:
-                if !c.isRejected { return false }
+            if let routing = selectedRoutingFilter {
+                switch routing {
+                case .proxied:
+                    if !c.isProxied { return false }
+                case .direct:
+                    if !c.isDirect { return false }
+                case .reject:
+                    if !c.isRejected { return false }
+                }
+            }
+            
+            if let proto = selectedProtocolFilter {
+                switch proto {
+                case .tcp:
+                    if c.connectionProtocol.uppercased() != "TCP" { return false }
+                case .udp:
+                    if c.connectionProtocol.uppercased() != "UDP" { return false }
+                }
             }
             
             if q.isEmpty { return true }
@@ -208,8 +225,13 @@ struct ConnectionsView: View {
     let connections: [ProxyBridgeViewModel.ConnectionLog]
     let allConnections: [ProxyBridgeViewModel.ConnectionLog]
     @Binding var searchText: String
-    @Binding var selectedFilter: ConnectionFilter
+    @Binding var selectedRoutingFilter: RoutingFilter?
+    @Binding var selectedProtocolFilter: ProtocolFilter?
     let onClear: () -> Void
+    
+    var isAllSelected: Bool {
+        selectedRoutingFilter == nil && selectedProtocolFilter == nil
+    }
     
     var body: some View {
         VStack(spacing: 0) {
@@ -219,31 +241,12 @@ struct ConnectionsView: View {
         }
     }
 
-    private func count(for filter: ConnectionFilter) -> Int {
-        switch filter {
-        case .all:
-            return allConnections.count
-        case .proxied:
-            return allConnections.filter { $0.isProxied }.count
-        case .direct:
-            return allConnections.filter { $0.isDirect }.count
-        case .reject:
-            return allConnections.filter { $0.isRejected }.count
-        }
-    }
-
-    private func badgeColor(for filter: ConnectionFilter) -> Color? {
-        switch filter {
-        case .all:
-            return nil
-        case .proxied:
-            return .purple
-        case .direct:
-            return .blue
-        case .reject:
-            return .red
-        }
-    }
+    private var allCount: Int { allConnections.count }
+    private var proxiedCount: Int { allConnections.filter { $0.isProxied }.count }
+    private var directCount: Int { allConnections.filter { $0.isDirect }.count }
+    private var rejectCount: Int { allConnections.filter { $0.isRejected }.count }
+    private var tcpCount: Int { allConnections.filter { $0.connectionProtocol.uppercased() == "TCP" }.count }
+    private var udpCount: Int { allConnections.filter { $0.connectionProtocol.uppercased() == "UDP" }.count }
 
     private var searchBar: some View {
         VStack(spacing: 8) {
@@ -270,14 +273,89 @@ struct ConnectionsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
-                ForEach(ConnectionFilter.allCases) { filter in
-                    FilterChipButton(
-                        title: filter.rawValue,
-                        isSelected: selectedFilter == filter,
-                        count: count(for: filter),
-                        badgeColor: badgeColor(for: filter)
-                    ) {
-                        selectedFilter = filter
+                // ALL (mutually exclusive with all other filters)
+                FilterChipButton(
+                    title: "ALL",
+                    isSelected: isAllSelected,
+                    count: allCount,
+                    badgeColor: nil
+                ) {
+                    selectedRoutingFilter = nil
+                    selectedProtocolFilter = nil
+                }
+                
+                Divider()
+                    .frame(height: 14)
+                    .padding(.horizontal, 2)
+                
+                // PROXIED / DIRECT / REJECT (mutually exclusive with each other, togglable)
+                FilterChipButton(
+                    title: "PROXIED",
+                    isSelected: selectedRoutingFilter == .proxied,
+                    count: proxiedCount,
+                    badgeColor: .purple
+                ) {
+                    if selectedRoutingFilter == .proxied {
+                        selectedRoutingFilter = nil
+                    } else {
+                        selectedRoutingFilter = .proxied
+                    }
+                }
+                
+                FilterChipButton(
+                    title: "DIRECT",
+                    isSelected: selectedRoutingFilter == .direct,
+                    count: directCount,
+                    badgeColor: .blue
+                ) {
+                    if selectedRoutingFilter == .direct {
+                        selectedRoutingFilter = nil
+                    } else {
+                        selectedRoutingFilter = .direct
+                    }
+                }
+                
+                FilterChipButton(
+                    title: "REJECT",
+                    isSelected: selectedRoutingFilter == .reject,
+                    count: rejectCount,
+                    badgeColor: .red
+                ) {
+                    if selectedRoutingFilter == .reject {
+                        selectedRoutingFilter = nil
+                    } else {
+                        selectedRoutingFilter = .reject
+                    }
+                }
+                
+                Divider()
+                    .frame(height: 14)
+                    .padding(.horizontal, 2)
+                
+                // TCP / UDP (mutually exclusive with each other, togglable)
+                FilterChipButton(
+                    title: "TCP",
+                    isSelected: selectedProtocolFilter == .tcp,
+                    count: tcpCount,
+                    badgeColor: .teal
+                ) {
+                    if selectedProtocolFilter == .tcp {
+                        selectedProtocolFilter = nil
+                    } else {
+                        selectedProtocolFilter = .tcp
+                    }
+                }
+                
+                FilterChipButton(
+                    title: "UDP",
+                    isSelected: selectedProtocolFilter == .udp,
+                    count: udpCount,
+                    badgeColor: .orange
+                ) {
+                    if selectedProtocolFilter == .udp {
+                        selectedProtocolFilter = nil
+                    } else {
+                        selectedProtocolFilter = .udp
                     }
                 }
                 
