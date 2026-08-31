@@ -375,6 +375,8 @@ class AppProxyProvider: NETransparentProxyProvider {
     }
 
     private func appendLog(_ entry: LogEntry) {
+        SharedLogStore.shared.append(entryDict: entry.toDict())
+        
         logQueueLock.lock()
         logBuffer[logTail] = entry
         logTail = (logTail + 1) % AppProxyProvider.logCapacity
@@ -434,20 +436,26 @@ class AppProxyProvider: NETransparentProxyProvider {
     }
 
     override func startProxy(options: [String : Any]?, completionHandler: @escaping (Error?) -> Void) {
-        var initialDict = options ?? [:]
-        if let protoConfig = (self.protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration {
-            for (k, v) in protoConfig {
-                if initialDict[k] == nil {
-                    initialDict[k] = v
+        if let config = SharedConfigStore.shared.loadCurrent() {
+            self.trafficLoggingEnabled = config.trafficLoggingEnabled
+            self.applyProxyConfigs(config.configs)
+            self.applyRules(config.rules)
+        } else {
+            var initialDict = options ?? [:]
+            if let protoConfig = (self.protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration {
+                for (k, v) in protoConfig {
+                    if initialDict[k] == nil {
+                        initialDict[k] = v
+                    }
                 }
             }
-        }
-        
-        if let configs = initialDict["configs"] as? [[String: Any]] {
-            self.applyProxyConfigs(configs)
-        }
-        if let rawRules = initialDict["rules"] as? [[String: Any]] {
-            self.applyRules(rawRules)
+            
+            if let configs = initialDict["configs"] as? [[String: Any]] {
+                self.applyProxyConfigs(configs)
+            }
+            if let rawRules = initialDict["rules"] as? [[String: Any]] {
+                self.applyRules(rawRules)
+            }
         }
 
         let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
@@ -612,6 +620,12 @@ class AppProxyProvider: NETransparentProxyProvider {
     }
     
     override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
+        if let updated = SharedConfigStore.shared.loadIfModified() {
+            self.trafficLoggingEnabled = updated.trafficLoggingEnabled
+            self.applyProxyConfigs(updated.configs)
+            self.applyRules(updated.rules)
+        }
+
         if let tcpFlow = flow as? NEAppProxyTCPFlow {
             return handleTCPFlow(tcpFlow)
         } else if let udpFlow = flow as? NEAppProxyUDPFlow {
