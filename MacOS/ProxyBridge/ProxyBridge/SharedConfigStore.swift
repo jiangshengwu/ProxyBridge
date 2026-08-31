@@ -3,23 +3,37 @@ import Foundation
 final class SharedConfigStore {
     static let shared = SharedConfigStore()
     
-    private let sharedDirectory: URL
-    private let configURL: URL
+    private let appGroup = "group.com.interceptsuite.ProxyBridge"
+    private let configURL: URL?
     private let lock = NSLock()
     private var lastMtime: Date?
     
+    private static func resolveContainerURL(appGroup: String) -> URL? {
+        if let url = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup),
+           !url.path.hasPrefix("/var/root") {
+            return url
+        }
+        let usersURL = URL(fileURLWithPath: "/Users")
+        if let userDirs = try? FileManager.default.contentsOfDirectory(at: usersURL, includingPropertiesForKeys: nil) {
+            for userDir in userDirs {
+                let candidate = userDir.appendingPathComponent("Library/Group Containers/\(appGroup)")
+                if FileManager.default.fileExists(atPath: candidate.path) {
+                    return candidate
+                }
+            }
+        }
+        return FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup)
+    }
+    
     private init() {
-        let dir = URL(fileURLWithPath: "/Users/Shared/ProxyBridge", isDirectory: true)
-        self.sharedDirectory = dir
-        self.configURL = dir.appendingPathComponent("shared_config.json")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o777])
+        configURL = SharedConfigStore.resolveContainerURL(appGroup: appGroup)?
+            .appendingPathComponent("shared_config.json")
     }
     
     func save(rules: [[String: Any]], configs: [[String: Any]], trafficLoggingEnabled: Bool) {
+        guard let url = configURL else { return }
         lock.lock()
         defer { lock.unlock() }
-        
-        try? FileManager.default.createDirectory(at: sharedDirectory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o777])
         
         let payload: [String: Any] = [
             "version": 1,
@@ -30,16 +44,17 @@ final class SharedConfigStore {
         ]
         
         if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) {
-            try? data.write(to: configURL, options: .atomic)
-            try? FileManager.default.setAttributes([.posixPermissions: 0o666], ofItemAtPath: configURL.path)
+            try? data.write(to: url, options: .atomic)
+            try? FileManager.default.setAttributes([.posixPermissions: 0o666], ofItemAtPath: url.path)
         }
     }
     
     func loadIfModified() -> (rules: [[String: Any]], configs: [[String: Any]], trafficLoggingEnabled: Bool)? {
+        guard let url = configURL else { return nil }
         lock.lock()
         defer { lock.unlock() }
         
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: configURL.path),
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
               let mtime = attrs[.modificationDate] as? Date else {
             return nil
         }
@@ -48,7 +63,7 @@ final class SharedConfigStore {
             return nil
         }
         
-        guard let data = try? Data(contentsOf: configURL),
+        guard let data = try? Data(contentsOf: url),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
@@ -62,7 +77,8 @@ final class SharedConfigStore {
     }
     
     func loadCurrent() -> (rules: [[String: Any]], configs: [[String: Any]], trafficLoggingEnabled: Bool)? {
-        guard let data = try? Data(contentsOf: configURL),
+        guard let url = configURL,
+              let data = try? Data(contentsOf: url),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
