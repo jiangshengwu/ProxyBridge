@@ -1,11 +1,41 @@
 import SwiftUI
 import AppKit
 
+enum ConnectionFilter: String, CaseIterable, Identifiable {
+    case all = "ALL"
+    case proxied = "PROXIED"
+    case direct = "DIRECT"
+    case reject = "REJECT"
+
+    var id: String { rawValue }
+}
+
+extension ProxyBridgeViewModel.ConnectionLog {
+    var isProxied: Bool {
+        let p = proxy.lowercased()
+        let s = status.uppercased()
+        return p != "direct" && p != "block" && s != "BLOCKED" && s != "REJECTED" && s != "DIRECT"
+    }
+    
+    var isDirect: Bool {
+        let p = proxy.lowercased()
+        let s = status.uppercased()
+        return p == "direct" || s == "DIRECT"
+    }
+    
+    var isRejected: Bool {
+        let p = proxy.lowercased()
+        let s = status.uppercased()
+        return p == "block" || s == "BLOCKED" || s == "REJECTED" || s == "FAILED" || s == "ERROR"
+    }
+}
+
 struct ContentView: View {
     @ObservedObject var viewModel: ProxyBridgeViewModel
     @State private var selectedTab = 0
     @State private var connectionSearchText = ""
     @State private var activitySearchText = ""
+    @State private var selectedConnectionFilter: ConnectionFilter = .all
     
     var body: some View {
         VStack(spacing: 0) {
@@ -48,7 +78,9 @@ struct ContentView: View {
             if selectedTab == 0 {
                 ConnectionsView(
                     connections: filteredConnections,
+                    allConnections: viewModel.connections,
                     searchText: $connectionSearchText,
+                    selectedFilter: $selectedConnectionFilter,
                     onClear: viewModel.clearConnections
                 )
             } else {
@@ -63,19 +95,27 @@ struct ContentView: View {
     
     private var filteredConnections: [ProxyBridgeViewModel.ConnectionLog] {
         let q = connectionSearchText
-        if q.isEmpty {
-            return viewModel.connections
-        }
-        // match against every field so a search finds protocol, ip, port, process, proxy, status, details or time
-        return viewModel.connections.filter {
-            $0.timestamp.localizedCaseInsensitiveContains(q) ||
-            $0.connectionProtocol.localizedCaseInsensitiveContains(q) ||
-            $0.process.localizedCaseInsensitiveContains(q) ||
-            $0.destination.localizedCaseInsensitiveContains(q) ||
-            $0.port.localizedCaseInsensitiveContains(q) ||
-            $0.proxy.localizedCaseInsensitiveContains(q) ||
-            $0.status.localizedCaseInsensitiveContains(q) ||
-            $0.details.localizedCaseInsensitiveContains(q)
+        return viewModel.connections.filter { c in
+            switch selectedConnectionFilter {
+            case .all:
+                break
+            case .proxied:
+                if !c.isProxied { return false }
+            case .direct:
+                if !c.isDirect { return false }
+            case .reject:
+                if !c.isRejected { return false }
+            }
+            
+            if q.isEmpty { return true }
+            return c.timestamp.localizedCaseInsensitiveContains(q) ||
+                c.connectionProtocol.localizedCaseInsensitiveContains(q) ||
+                c.process.localizedCaseInsensitiveContains(q) ||
+                c.destination.localizedCaseInsensitiveContains(q) ||
+                c.port.localizedCaseInsensitiveContains(q) ||
+                c.proxy.localizedCaseInsensitiveContains(q) ||
+                c.status.localizedCaseInsensitiveContains(q) ||
+                c.details.localizedCaseInsensitiveContains(q)
         }
     }
 
@@ -109,9 +149,66 @@ struct TabButton: View {
     }
 }
 
+struct FilterChipButton: View {
+    let title: String
+    let isSelected: Bool
+    let count: Int
+    let badgeColor: Color?
+    let action: () -> Void
+    
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Text(title)
+                    .font(.system(size: 11, weight: isSelected ? .bold : .medium))
+                
+                Text("\(count)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(badgeBackground)
+                    .foregroundColor(badgeForeground)
+                    .clipShape(Capsule())
+            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(isSelected ? Color.accentColor : Color(NSColor.controlColor).opacity(0.8))
+            .foregroundColor(isSelected ? .white : .primary)
+            .cornerRadius(6)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .stroke(isSelected ? Color.accentColor : Color.gray.opacity(0.25), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+    
+    private var badgeBackground: Color {
+        if isSelected {
+            return Color.white.opacity(0.25)
+        }
+        if let badgeColor = badgeColor {
+            return badgeColor.opacity(0.15)
+        }
+        return Color.gray.opacity(0.2)
+    }
+    
+    private var badgeForeground: Color {
+        if isSelected {
+            return .white
+        }
+        if let badgeColor = badgeColor {
+            return badgeColor
+        }
+        return .secondary
+    }
+}
+
 struct ConnectionsView: View {
     let connections: [ProxyBridgeViewModel.ConnectionLog]
+    let allConnections: [ProxyBridgeViewModel.ConnectionLog]
     @Binding var searchText: String
+    @Binding var selectedFilter: ConnectionFilter
     let onClear: () -> Void
     
     var body: some View {
@@ -122,16 +219,72 @@ struct ConnectionsView: View {
         }
     }
 
-    private var searchBar: some View {
-        HStack {
-            Image(systemName: "magnifyingglass")
-                .foregroundColor(.gray)
-            TextField("Search connections...", text: $searchText)
-                .textFieldStyle(.plain)
-            Spacer()
-            Button("Clear", action: onClear)
+    private func count(for filter: ConnectionFilter) -> Int {
+        switch filter {
+        case .all:
+            return allConnections.count
+        case .proxied:
+            return allConnections.filter { $0.isProxied }.count
+        case .direct:
+            return allConnections.filter { $0.isDirect }.count
+        case .reject:
+            return allConnections.filter { $0.isRejected }.count
         }
-        .padding()
+    }
+
+    private func badgeColor(for filter: ConnectionFilter) -> Color? {
+        switch filter {
+        case .all:
+            return nil
+        case .proxied:
+            return .purple
+        case .direct:
+            return .blue
+        case .reject:
+            return .red
+        }
+    }
+
+    private var searchBar: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.gray)
+                TextField("Search connections...", text: $searchText)
+                    .textFieldStyle(.plain)
+                
+                if !searchText.isEmpty {
+                    Button(action: { searchText = "" }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.gray)
+                    }
+                    .buttonStyle(.plain)
+                }
+                
+                Spacer()
+                Button("Clear", action: onClear)
+            }
+            
+            HStack(spacing: 6) {
+                Text("Filter:")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                ForEach(ConnectionFilter.allCases) { filter in
+                    FilterChipButton(
+                        title: filter.rawValue,
+                        isSelected: selectedFilter == filter,
+                        count: count(for: filter),
+                        badgeColor: badgeColor(for: filter)
+                    ) {
+                        selectedFilter = filter
+                    }
+                }
+                
+                Spacer()
+            }
+        }
+        .padding(10)
         .background(Color(NSColor.controlBackgroundColor))
     }
 
