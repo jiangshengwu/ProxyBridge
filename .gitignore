@@ -21,6 +21,7 @@ MacOS/ProxyBridge/.env
 MacOS/ProxyBridge/output/
 MacOS/ProxyBridge/build/
 MacOS/ProxyBridge/provision/**
+dist/
 
 # Signing configuration files (sensitive)
 MacOS/ProxyBridge/Signing-App.xcconfig
