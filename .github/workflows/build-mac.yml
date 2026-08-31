@@ -45,7 +45,7 @@ jobs:
       run: |
         cat << 'EOF' > MacOS/ProxyBridge/Signing-Config-app.xcconfig
         PRODUCT_NAME = ProxyBridge
-        CODE_SIGN_ENTITLEMENTS = ProxyBridge/ProxyBridge.entitlements
+        CODE_SIGN_ENTITLEMENTS = ProxyBridge/ProxyBridgeRelease.entitlements
         CODE_SIGN_IDENTITY = -
         CODE_SIGN_STYLE = Manual
         DEVELOPMENT_TEAM =
@@ -56,7 +56,7 @@ jobs:
 
         cat << 'EOF' > MacOS/ProxyBridge/Signing-Config-ext.xcconfig
         PRODUCT_NAME = com.interceptsuite.ProxyBridge.extension
-        CODE_SIGN_ENTITLEMENTS = extension/extension.entitlements
+        CODE_SIGN_ENTITLEMENTS = extension/extensionRelease.entitlements
         CODE_SIGN_IDENTITY = -
         CODE_SIGN_STYLE = Manual
         DEVELOPMENT_TEAM =
