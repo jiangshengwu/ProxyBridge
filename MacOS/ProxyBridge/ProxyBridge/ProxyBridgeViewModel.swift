@@ -472,6 +472,23 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         }
     }
 
+    private func onTunnelConnected(session: NETunnelProviderSession) {
+        self.tunnelSession = session
+        self.isProxyActive = true
+        self.setupLogPolling(session: session)
+        if !self.proxyConfigs.isEmpty {
+            self.sendProxyConfigsToExtension(session: session)
+        }
+        
+        RuleManager.loadRulesFromUserDefaults(session: session) { [weak self] success, count in
+            if success && count > 0 {
+                self?.addLog("INFO", "Loaded \(count) rule(s) from local storage into extension")
+            } else {
+                self?.addLog("INFO", "Extension rules synced (count: \(count))")
+            }
+        }
+    }
+
     private func reloadAndStartTunnel(manager: NETransparentProxyManager) {
         manager.loadFromPreferences { [weak self] loadError in
             guard let self = self else { return }
@@ -482,40 +499,59 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             }
 
             guard let session = manager.connection as? NETunnelProviderSession else { return }
+            self.tunnelSession = session
 
-            // register before startTunnel so we can't miss a fast .connected transition
-            // remove the observer the moment it fires in oneshot to avoid configuring twice
-            var observer: NSObjectProtocol?
-            observer = NotificationCenter.default.addObserver(
-                forName: .NEVPNStatusDidChange,
-                object: session,
-                queue: .main
-            ) { [weak self] _ in
-                guard let self = self, session.status == .connected else { return }
-                if let obs = observer { NotificationCenter.default.removeObserver(obs) }
-                observer = nil
-
-                self.setupLogPolling(session: session)
-                if !self.proxyConfigs.isEmpty {
-                    self.sendProxyConfigsToExtension(session: session)
-                }
-                
-                RuleManager.loadRulesFromUserDefaults(session: session) { success, count in
-                    if success && count > 0 {
-                        self.addLog("INFO", "Loaded \(count) rule(s) from local storage")
+            var isConfigured = false
+            func handleStatusChange(status: NEVPNStatus) {
+                switch status {
+                case .connected:
+                    self.addLog("INFO", "Tunnel status: CONNECTED")
+                    if !isConfigured {
+                        isConfigured = true
+                        self.onTunnelConnected(session: session)
                     }
+                case .connecting:
+                    self.addLog("INFO", "Tunnel status: CONNECTING")
+                case .disconnecting:
+                    self.addLog("INFO", "Tunnel status: DISCONNECTING")
+                case .disconnected:
+                    self.addLog("INFO", "Tunnel status: DISCONNECTED")
+                case .reasserting:
+                    self.addLog("INFO", "Tunnel status: REASSERTING")
+                case .invalid:
+                    self.addLog("WARN", "Tunnel status: INVALID")
+                @unknown default:
+                    break
+                }
+            }
+
+            NotificationCenter.default.addObserver(
+                forName: .NEVPNStatusDidChange,
+                object: nil,
+                queue: .main
+            ) { [weak self] notif in
+                guard let self = self else { return }
+                if let conn = notif.object as? NEVPNConnection {
+                    handleStatusChange(status: conn.status)
+                } else {
+                    handleStatusChange(status: session.status)
                 }
             }
 
             do {
                 try session.startTunnel()
-                DispatchQueue.main.async {
-                    self.isProxyActive = true
-                    self.addLog("INFO", "Proxy tunnel started")
+                self.isProxyActive = true
+                self.addLog("INFO", "Proxy tunnel started")
+                handleStatusChange(status: session.status)
+
+                // Periodic fallback checks in case notification was missed
+                for delay in [0.5, 1.0, 2.0, 3.0, 5.0] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                        guard let self = self, !isConfigured else { return }
+                        handleStatusChange(status: session.status)
+                    }
                 }
             } catch {
-                if let obs = observer { NotificationCenter.default.removeObserver(obs) }
-                observer = nil
                 self.addLog("ERROR", "Failed to start tunnel: \(error.localizedDescription)")
             }
         }
