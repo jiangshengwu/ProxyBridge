@@ -303,7 +303,9 @@ struct ProxyRulesView: View {
 
     // persist the current list and push it to the extension if the tunnel is up
     private func saveAndSync() {
-        UserDefaults.standard.set(rules.map { $0.toDict() }, forKey: "proxyRules")
+        let dicts = rules.map { $0.toDict() }
+        UserDefaults.standard.set(dicts, forKey: "proxyRules")
+        LocalIPCClient.shared.syncRules(dicts) { _, _ in }
         if let session = viewModel.tunnelSession {
             RuleManager.resyncRules(session: session) { _, _ in }
         }

@@ -433,6 +433,24 @@ class AppProxyProvider: NETransparentProxyProvider {
         log("Loaded \(count) rule(s) into extension")
     }
 
+    private func drainLogs() -> [[String: String]] {
+        logQueueLock.lock()
+        defer { logQueueLock.unlock() }
+        guard logCount > 0 else { return [] }
+        let batchSize = min(100, logCount)
+        var logsToSend: [[String: String]] = []
+        logsToSend.reserveCapacity(batchSize)
+        for _ in 0..<batchSize {
+            if let entry = logBuffer[logHead] {
+                logsToSend.append(entry.toDict())
+            }
+            logBuffer[logHead] = nil
+            logHead = (logHead + 1) % AppProxyProvider.logCapacity
+            logCount -= 1
+        }
+        return logsToSend
+    }
+
     override func startProxy(options: [String : Any]?, completionHandler: @escaping (Error?) -> Void) {
         var initialDict = options ?? [:]
         if let protoConfig = (self.protocolConfiguration as? NETunnelProviderProtocol)?.providerConfiguration {
@@ -449,6 +467,27 @@ class AppProxyProvider: NETransparentProxyProvider {
         if let rawRules = initialDict["rules"] as? [[String: Any]] {
             self.applyRules(rawRules)
         }
+
+        LocalIPCServer.shared.onGetLogs = { [weak self] in
+            return self?.drainLogs() ?? []
+        }
+        LocalIPCServer.shared.onSetRules = { [weak self] rawRules in
+            self?.applyRules(rawRules)
+            return rawRules.count
+        }
+        LocalIPCServer.shared.onSetConfigs = { [weak self] configs in
+            self?.applyProxyConfigs(configs)
+        }
+        LocalIPCServer.shared.onSetTrafficLogging = { [weak self] enabled in
+            self?.trafficLoggingEnabled = enabled
+        }
+        LocalIPCServer.shared.onClearRules = { [weak self] in
+            self?.rulesLock.lock()
+            self?.rules.removeAll()
+            self?.nextRuleId = 1
+            self?.rulesLock.unlock()
+        }
+        LocalIPCServer.shared.start()
 
         let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
         
@@ -469,6 +508,7 @@ class AppProxyProvider: NETransparentProxyProvider {
     }
     
     override func stopProxy(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        LocalIPCServer.shared.stop()
         udpLock.lock()
         let all = Array(udpAssociations.values)
         udpAssociations.removeAll()
@@ -641,6 +681,10 @@ class AppProxyProvider: NETransparentProxyProvider {
         } else {
             destination = String(describing: remoteEndpoint)
             portStr = "unknown"
+        }
+        
+        if portNum == LocalIPCServer.port {
+            return false
         }
         
         let processName = getProcessName(from: metaData)

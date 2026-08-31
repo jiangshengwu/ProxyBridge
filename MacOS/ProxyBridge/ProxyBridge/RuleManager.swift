@@ -108,9 +108,14 @@ struct RuleManager {
             completion(true, 0)
             return
         }
-        // add one at a time so rule order matches the saved order and the
-        // running counter isn't touched from concurrent completion handlers
-        addRulesInOrder(session: session, rules: rules, index: 0, added: 0, completion: completion)
+        
+        LocalIPCClient.shared.syncRules(rules) { success, count in
+            if success {
+                completion(true, count)
+            } else {
+                addRulesInOrder(session: session, rules: rules, index: 0, added: 0, completion: completion)
+            }
+        }
     }
 
     private static func addRulesInOrder(

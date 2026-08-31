@@ -140,16 +140,16 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     }
     
     private func sendTrafficLoggingToExtension(_ enabled: Bool) {
-        guard let session = tunnelSession else { return }
-        
-        let message: [String: Any] = [
-            "action": "setTrafficLogging",
-            "enabled": enabled
-        ]
-        
-        guard let data = try? JSONSerialization.data(withJSONObject: message) else { return }
-        
-        try? session.sendProviderMessage(data) { _ in }
+        LocalIPCClient.shared.setTrafficLogging(enabled)
+        if let session = tunnelSession {
+            let message: [String: Any] = [
+                "action": "setTrafficLogging",
+                "enabled": enabled
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: message) {
+                try? session.sendProviderMessage(data) { _ in }
+            }
+        }
     }
     
     private func loadProxyConfig() {
@@ -620,18 +620,8 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     }
     
     private func pollLogs() {
-        guard let session = tunnelSession else { return }
-        
-        let message = ["action": "getLogs"]
-        guard let data = try? JSONSerialization.data(withJSONObject: message) else { return }
-        
-        try? session.sendProviderMessage(data) { [weak self] response in
-            guard let self = self,
-                  let responseData = response,
-                  let logs = try? JSONSerialization.jsonObject(with: responseData) as? [[String: String]],
-                  !logs.isEmpty else {
-                return
-            }
+        LocalIPCClient.shared.fetchLogs { [weak self] logs in
+            guard let self = self, !logs.isEmpty else { return }
 
             DispatchQueue.main.async {
                 var newConnections: [ConnectionLog] = []
@@ -709,7 +699,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         )
     }
 
-    func sendProxyConfigsToExtension(session: NETunnelProviderSession) {
+    func sendProxyConfigsToExtension(session: NETunnelProviderSession?) {
         let configsArray: [[String: Any]] = proxyConfigs.map { config in
             var dict: [String: Any] = [
                 "id": config.id,
@@ -721,18 +711,19 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             if let p = config.password { dict["proxyPassword"] = p }
             return dict
         }
-        let message: [String: Any] = ["action": "setProxyConfigs", "configs": configsArray]
-        guard let data = try? JSONSerialization.data(withJSONObject: message) else {
-            addLog("ERROR", "Failed to encode proxy configs")
-            return
-        }
-        try? session.sendProviderMessage(data) { [weak self] response in
-            if let responseData = response,
-               let json = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-               let status = json["status"] as? String, status == "ok" {
+        
+        LocalIPCClient.shared.syncConfigs(configsArray) { [weak self] success in
+            if success {
                 DispatchQueue.main.async {
                     self?.addLog("INFO", "Proxy configs sent: \(self?.proxyConfigs.count ?? 0) config(s)")
                 }
+            }
+        }
+        
+        if let session = session {
+            let message: [String: Any] = ["action": "setProxyConfigs", "configs": configsArray]
+            if let data = try? JSONSerialization.data(withJSONObject: message) {
+                try? session.sendProviderMessage(data) { _ in }
             }
         }
     }
