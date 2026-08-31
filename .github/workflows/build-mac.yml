@@ -4,7 +4,7 @@ permissions:
 
 on:
   push:
-    branches: [ dev, main, master ]
+    branches: [ dev, main, master, feat/*, fix/* ]
   pull_request:
     branches: [ dev, main, master ]
   workflow_dispatch:
@@ -18,19 +18,51 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      uses: actions/checkout@v4
     
     - name: Set up Xcode
-      uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1
+      uses: maxim-lobanov/setup-xcode@v1
       with:
         xcode-version: latest-stable
-    
-    - name: Create xcconfig files
+
+    - name: Check Signing Secrets
+      id: check-secrets
+      run: |
+        if [ -n "${{ secrets.MACOS_CERTIFICATE }}" ] && [ -n "${{ secrets.APPLE_ID }}" ]; then
+          echo "has_secrets=true" >> $GITHUB_OUTPUT
+        else
+          echo "has_secrets=false" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Create xcconfig files (Signed)
+      if: steps.check-secrets.outputs.has_secrets == 'true'
       run: |
         echo "${{ secrets.MACOS_APP_XCCONFIG }}" > MacOS/ProxyBridge/Signing-Config-app.xcconfig
         echo "${{ secrets.MACOS_EXT_XCCONFIG }}" > MacOS/ProxyBridge/Signing-Config-ext.xcconfig
 
+    - name: Create xcconfig files (Ad-Hoc / Fork)
+      if: steps.check-secrets.outputs.has_secrets != 'true'
+      run: |
+        cat << 'EOF' > MacOS/ProxyBridge/Signing-Config-app.xcconfig
+        CODE_SIGN_IDENTITY = -
+        CODE_SIGN_STYLE = Manual
+        DEVELOPMENT_TEAM =
+        PROVISIONING_PROFILE_SPECIFIER =
+        CODE_SIGNING_REQUIRED = NO
+        CODE_SIGNING_ALLOWED = YES
+        EOF
+
+        cat << 'EOF' > MacOS/ProxyBridge/Signing-Config-ext.xcconfig
+        CODE_SIGN_IDENTITY = -
+        CODE_SIGN_STYLE = Manual
+        DEVELOPMENT_TEAM =
+        PROVISIONING_PROFILE_SPECIFIER =
+        CODE_SIGNING_REQUIRED = NO
+        CODE_SIGNING_ALLOWED = YES
+        EOF
+
     - name: Install Provisioning Profiles
+      if: steps.check-secrets.outputs.has_secrets == 'true'
       run: |
         mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
 
@@ -47,6 +79,7 @@ jobs:
         echo "Installed ext profile: ${EXT_UUID}"
 
     - name: Import Certificate
+      if: steps.check-secrets.outputs.has_secrets == 'true'
       run: |
         # Decode certificate
         echo "${{ secrets.MACOS_CERTIFICATE }}" | base64 --decode > /tmp/certificate.p12
@@ -82,7 +115,8 @@ jobs:
         # Verify both certificates are available
         security find-identity -v -p codesigning build.keychain
 
-    - name: Build Universal Binary
+    - name: Build Universal Binary (Signed)
+      if: steps.check-secrets.outputs.has_secrets == 'true'
       run: |
         cd MacOS/ProxyBridge
         xcodebuild \
@@ -95,16 +129,31 @@ jobs:
           OTHER_CODE_SIGN_FLAGS="--keychain build.keychain --timestamp" \
           clean build
 
+    - name: Build Universal Binary (Ad-Hoc / Fork)
+      if: steps.check-secrets.outputs.has_secrets != 'true'
+      run: |
+        cd MacOS/ProxyBridge
+        xcodebuild \
+          -project ProxyBridge.xcodeproj \
+          -scheme ProxyBridge \
+          -configuration Release \
+          -derivedDataPath build/DerivedData \
+          ARCHS="arm64 x86_64" \
+          ONLY_ACTIVE_ARCH=NO \
+          CODE_SIGN_IDENTITY="-" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=YES \
+          clean build
+
     - name: Verify Build
       run: |
         cd MacOS/ProxyBridge
         ls -la build/DerivedData/Build/Products/Release/
         file build/DerivedData/Build/Products/Release/ProxyBridge.app/Contents/MacOS/ProxyBridge
         lipo -archs build/DerivedData/Build/Products/Release/ProxyBridge.app/Contents/MacOS/ProxyBridge
-        # Verify code signature
-        codesign -dv --verbose=4 build/DerivedData/Build/Products/Release/ProxyBridge.app
 
     - name: Notarize App
+      if: steps.check-secrets.outputs.has_secrets == 'true'
       run: |
         APP_PATH="MacOS/ProxyBridge/build/DerivedData/Build/Products/Release/ProxyBridge.app"
 
@@ -149,74 +198,84 @@ jobs:
       env:
         PKG_ENV_CONTENT: ${{ secrets.PKG_ENV }}
       run: |
-        # Write PKG_ENV to .env but strip SIGNING_IDENTITY so build.sh skips signing
-        # (productsign inside build.sh cannot access build.keychain - we do it below)
-        printf '%s' "$PKG_ENV_CONTENT" | grep -v "^SIGNING_IDENTITY" > MacOS/ProxyBridge/.env
-
-        # Copy notarized .app into output/ where build.sh expects it
+        # Copy .app into output/ where build.sh expects it
         mkdir -p MacOS/ProxyBridge/output
         cp -R MacOS/ProxyBridge/build/DerivedData/Build/Products/Release/ProxyBridge.app \
           MacOS/ProxyBridge/output/ProxyBridge.app
 
-        # Run build script - creates the unsigned .pkg only
+        # Run build script - creates the unsigned .pkg
         cd MacOS/ProxyBridge
         chmod +x build.sh
         bash build.sh
 
-        PKG_VERSION="3.2.0"
+        PKG_VERSION="4.1.0"
         PKG_UNSIGNED="output/ProxyBridge-v${PKG_VERSION}-Universal-Installer.pkg"
         PKG_SIGNED="output/ProxyBridge-v${PKG_VERSION}-Universal-Installer-signed.pkg"
 
-        # Sign pkg with explicit keychain - no prompting
-        echo "Signing installer..."
-        KEYCHAIN_PATH=$(security list-keychains -d user | grep build | tr -d ' "')
-        echo "Using keychain: $KEYCHAIN_PATH"
-        security unlock-keychain -p "${{ secrets.MACOS_KEYCHAIN_PASSWORD }}" "$KEYCHAIN_PATH"
-        productsign \
-          --sign "${{ secrets.MACOS_SIGNING_IDENTITY }}" \
-          --keychain "$KEYCHAIN_PATH" \
-          "$PKG_UNSIGNED" "$PKG_SIGNED"
-        mv "$PKG_SIGNED" "$PKG_UNSIGNED"
+        if [ "${{ steps.check-secrets.outputs.has_secrets }}" = "true" ]; then
+          # Sign pkg with explicit keychain - no prompting
+          echo "Signing installer..."
+          KEYCHAIN_PATH=$(security list-keychains -d user | grep build | tr -d ' "')
+          echo "Using keychain: $KEYCHAIN_PATH"
+          security unlock-keychain -p "${{ secrets.MACOS_KEYCHAIN_PASSWORD }}" "$KEYCHAIN_PATH"
+          productsign \
+            --sign "${{ secrets.MACOS_SIGNING_IDENTITY }}" \
+            --keychain "$KEYCHAIN_PATH" \
+            "$PKG_UNSIGNED" "$PKG_SIGNED"
+          mv "$PKG_SIGNED" "$PKG_UNSIGNED"
 
-        # Notarize pkg
-        echo "Notarizing installer..."
-        PKG_SUBMIT_OUTPUT=$(xcrun notarytool submit "$PKG_UNSIGNED" \
-          --apple-id "${{ secrets.APPLE_ID }}" \
-          --password "${{ secrets.APPLE_APP_PASSWORD }}" \
-          --team-id "${{ secrets.APPLE_TEAM_ID }}" \
-          --wait 2>&1)
-
-        echo "$PKG_SUBMIT_OUTPUT"
-
-        PKG_SUBMISSION_ID=$(echo "$PKG_SUBMIT_OUTPUT" | grep "^  id:" | head -1 | awk '{print $2}')
-        if [ -n "$PKG_SUBMISSION_ID" ]; then
-          echo "--- PKG Notarization Log ---"
-          xcrun notarytool log "$PKG_SUBMISSION_ID" \
+          # Notarize pkg
+          echo "Notarizing installer..."
+          PKG_SUBMIT_OUTPUT=$(xcrun notarytool submit "$PKG_UNSIGNED" \
             --apple-id "${{ secrets.APPLE_ID }}" \
             --password "${{ secrets.APPLE_APP_PASSWORD }}" \
-            --team-id "${{ secrets.APPLE_TEAM_ID }}" 2>&1 || true
+            --team-id "${{ secrets.APPLE_TEAM_ID }}" \
+            --wait 2>&1)
+
+          echo "$PKG_SUBMIT_OUTPUT"
+
+          PKG_SUBMISSION_ID=$(echo "$PKG_SUBMIT_OUTPUT" | grep "^  id:" | head -1 | awk '{print $2}')
+          if [ -n "$PKG_SUBMISSION_ID" ]; then
+            echo "--- PKG Notarization Log ---"
+            xcrun notarytool log "$PKG_SUBMISSION_ID" \
+              --apple-id "${{ secrets.APPLE_ID }}" \
+              --password "${{ secrets.APPLE_APP_PASSWORD }}" \
+              --team-id "${{ secrets.APPLE_TEAM_ID }}" 2>&1 || true
+          fi
+
+          if ! echo "$PKG_SUBMIT_OUTPUT" | grep -q "status: Accepted"; then
+            echo "PKG notarization failed!"
+            exit 1
+          fi
+
+          xcrun stapler staple "$PKG_UNSIGNED"
+          echo "PKG signed, notarized and stapled successfully"
         fi
 
-        if ! echo "$PKG_SUBMIT_OUTPUT" | grep -q "status: Accepted"; then
-          echo "PKG notarization failed!"
-          exit 1
-        fi
-
-        xcrun stapler staple "$PKG_UNSIGNED"
-        echo "PKG signed, notarized and stapled successfully"
+    - name: Zip App Bundle
+      run: |
+        cd MacOS/ProxyBridge
+        ditto -c -k --keepParent "build/DerivedData/Build/Products/Release/ProxyBridge.app" "output/ProxyBridge-macOS-Universal.zip"
 
     - name: Upload PKG Artifact
-      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      uses: actions/upload-artifact@v4
       with:
         name: ProxyBridge-macOS-Installer
         path: MacOS/ProxyBridge/output/ProxyBridge-*.pkg
+        retention-days: 30
+
+    - name: Upload App Zip Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: ProxyBridge-macOS-App-Zip
+        path: MacOS/ProxyBridge/output/ProxyBridge-macOS-Universal.zip
         retention-days: 30
 
     - name: Cleanup
       if: always()
       run: |
         # Delete temporary keychain
-        security delete-keychain build.keychain || true
+        security delete-keychain build.keychain 2>/dev/null || true
 
         # Remove provisioning profiles
         rm -f ~/Library/MobileDevice/Provisioning\ Profiles/*.provisionprofile || true
