@@ -461,6 +461,8 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 4.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.interceptsuite.ProxyBridge;
+				PRODUCT_NAME = "$(TARGET_NAME)";
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]" = "ProxyBridge Prod";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -541,6 +543,8 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MARKETING_VERSION = 4.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.interceptsuite.ProxyBridge.extension;
+				PRODUCT_NAME = com.interceptsuite.ProxyBridge.extension;
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]" = "ProxyBridge Extension Prod";
 				REGISTER_APP_GROUPS = YES;
 				SKIP_INSTALL = YES;
