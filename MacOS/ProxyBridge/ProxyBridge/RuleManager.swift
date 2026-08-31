@@ -60,15 +60,19 @@ struct RuleManager {
             return
         }
         
-        try? session.sendProviderMessage(data) { response in
-            guard let responseData = response,
-                  let result = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-                  let status = result["status"] as? String else {
-                completion(false, nil)
-                return
+        do {
+            try session.sendProviderMessage(data) { response in
+                guard let responseData = response,
+                      let result = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+                      let status = result["status"] as? String else {
+                    completion(false, nil)
+                    return
+                }
+                
+                completion(status == "ok", result)
             }
-            
-            completion(status == "ok", result)
+        } catch {
+            completion(false, nil)
         }
     }
     

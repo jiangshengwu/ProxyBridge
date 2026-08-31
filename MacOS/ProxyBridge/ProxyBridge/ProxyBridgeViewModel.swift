@@ -462,16 +462,21 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     private func onTunnelConnected(session: NETunnelProviderSession) {
         self.tunnelSession = session
         self.isProxyActive = true
-        self.setupLogPolling(session: session)
-        if !self.proxyConfigs.isEmpty {
-            self.sendProxyConfigsToExtension(session: session)
-        }
         
-        RuleManager.loadRulesFromUserDefaults(session: session) { [weak self] success, count in
-            if success && count > 0 {
-                self?.addLog("INFO", "Loaded \(count) rule(s) from local storage into extension")
-            } else {
-                self?.addLog("INFO", "Extension rules synced (count: \(count))")
+        // Brief 0.3s pause to let the extension's XPC listener bind after becoming CONNECTED
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self = self else { return }
+            self.setupLogPolling(session: session)
+            if !self.proxyConfigs.isEmpty {
+                self.sendProxyConfigsToExtension(session: session)
+            }
+            
+            RuleManager.loadRulesFromUserDefaults(session: session) { [weak self] success, count in
+                if success && count > 0 {
+                    self?.addLog("INFO", "Loaded \(count) rule(s) from local storage into extension")
+                } else {
+                    self?.addLog("INFO", "Extension rules synced (count: \(count))")
+                }
             }
         }
     }
