@@ -56,14 +56,104 @@ struct ContentView: View {
     }
     
     private var headerView: some View {
-        HStack {
-            Text("ProxyBridge")
-                .font(.headline)
-                .padding(.leading)
+        HStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(viewModel.isProxyActive ? Color.green : Color.gray.opacity(0.6))
+                    .frame(width: 9, height: 9)
+                Text("ProxyBridge")
+                    .font(.headline)
+                Text(viewModel.isProxyActive ? "Active" : "Stopped")
+                    .font(.caption)
+                    .foregroundColor(viewModel.isProxyActive ? .green : .secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(viewModel.isProxyActive ? Color.green.opacity(0.12) : Color.gray.opacity(0.12))
+                    .cornerRadius(4)
+            }
+            .padding(.leading, 16)
+            
             Spacer()
+            
+            // Start / Stop Toggle Button
+            Button(action: {
+                if viewModel.isProxyActive {
+                    viewModel.stopProxy()
+                } else {
+                    viewModel.startProxy()
+                }
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: viewModel.isProxyActive ? "stop.fill" : "play.fill")
+                        .font(.system(size: 10, weight: .bold))
+                    Text(viewModel.isProxyActive ? "Stop Proxy" : "Start Proxy")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 5)
+                .background(viewModel.isProxyActive ? Color.red.opacity(0.85) : Color.green.opacity(0.85))
+                .foregroundColor(.white)
+                .cornerRadius(6)
+            }
+            .buttonStyle(.plain)
+            
+            // Rules Button
+            Button(action: openRules) {
+                HStack(spacing: 5) {
+                    Image(systemName: "list.bullet.rectangle")
+                        .font(.system(size: 11))
+                    Text("Rules")
+                        .font(.system(size: 12))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color(NSColor.controlColor))
+                .cornerRadius(6)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            
+            // Settings Button
+            Button(action: openSettings) {
+                HStack(spacing: 5) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 11))
+                    Text("Settings")
+                        .font(.system(size: 12))
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color(NSColor.controlColor))
+                .cornerRadius(6)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                )
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 16)
         }
-        .frame(height: 44)
+        .frame(height: 46)
         .background(Color(NSColor.windowBackgroundColor))
+    }
+    
+    private func openSettings() {
+        if let delegate = AppDelegate.shared {
+            delegate.openProxySettings()
+        } else {
+            NSApp.sendAction(#selector(AppDelegate.openProxySettings), to: nil, from: nil)
+        }
+    }
+    
+    private func openRules() {
+        if let delegate = AppDelegate.shared {
+            delegate.openProxyRules()
+        } else {
+            NSApp.sendAction(#selector(AppDelegate.openProxyRules), to: nil, from: nil)
+        }
     }
     
     private var tabSelector: some View {
