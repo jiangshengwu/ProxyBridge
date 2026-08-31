@@ -66,14 +66,16 @@ struct ContentView: View {
         if q.isEmpty {
             return viewModel.connections
         }
-        // match against every field so a search finds protocol, ip, port, process, proxy or time
+        // match against every field so a search finds protocol, ip, port, process, proxy, status, details or time
         return viewModel.connections.filter {
             $0.timestamp.localizedCaseInsensitiveContains(q) ||
             $0.connectionProtocol.localizedCaseInsensitiveContains(q) ||
             $0.process.localizedCaseInsensitiveContains(q) ||
             $0.destination.localizedCaseInsensitiveContains(q) ||
             $0.port.localizedCaseInsensitiveContains(q) ||
-            $0.proxy.localizedCaseInsensitiveContains(q)
+            $0.proxy.localizedCaseInsensitiveContains(q) ||
+            $0.status.localizedCaseInsensitiveContains(q) ||
+            $0.details.localizedCaseInsensitiveContains(q)
         }
     }
 
@@ -142,7 +144,29 @@ struct ConnectionsView: View {
             out.append(LogText.seg(" → ", .secondaryLabelColor))
             out.append(LogText.seg("\(c.destination):\(c.port)", .systemOrange))
             out.append(LogText.seg(" → ", .secondaryLabelColor))
-            out.append(LogText.seg(c.proxy, c.proxy == "Direct" ? .secondaryLabelColor : .systemPurple))
+            out.append(LogText.seg(c.proxy, c.proxy == "Direct" ? .secondaryLabelColor : (c.proxy == "BLOCK" ? .systemRed : .systemPurple)))
+            
+            if !c.status.isEmpty {
+                let statusColor: NSColor
+                switch c.status.uppercased() {
+                case "CONNECTED", "SUCCESS", "OPEN":
+                    statusColor = .systemGreen
+                case "FAILED", "ERROR", "REJECTED":
+                    statusColor = .systemRed
+                case "CONNECTING":
+                    statusColor = .systemYellow
+                case "BLOCKED":
+                    statusColor = .systemRed
+                case "DIRECT":
+                    statusColor = .secondaryLabelColor
+                default:
+                    statusColor = .secondaryLabelColor
+                }
+                out.append(LogText.seg(" [\(c.status)]", statusColor))
+            }
+            if !c.details.isEmpty {
+                out.append(LogText.seg(" (\(c.details))", .secondaryLabelColor))
+            }
             out.append(LogText.seg("\n", .labelColor))
         }
         return out
@@ -179,7 +203,16 @@ struct ActivityLogsView: View {
         let out = NSMutableAttributedString()
         for log in logs {
             out.append(LogText.seg("[\(log.timestamp)] ", .secondaryLabelColor))
-            out.append(LogText.seg("[\(log.level)] ", log.level == "ERROR" ? .systemRed : .systemBlue))
+            let levelColor: NSColor
+            switch log.level.uppercased() {
+            case "ERROR":
+                levelColor = .systemRed
+            case "WARN", "WARNING":
+                levelColor = .systemYellow
+            default:
+                levelColor = .systemBlue
+            }
+            out.append(LogText.seg("[\(log.level)] ", levelColor))
             out.append(LogText.seg(log.message, .labelColor))
             out.append(LogText.seg("\n", .labelColor))
         }

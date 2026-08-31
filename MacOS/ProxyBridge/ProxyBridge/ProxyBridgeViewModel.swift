@@ -74,6 +74,8 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         let destination: String
         let port: String
         let proxy: String
+        let status: String
+        let details: String
     }
     
     struct ActivityLog: Identifiable {
@@ -640,6 +642,9 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             return nil
         }
 
+        let status = log["status"] ?? ""
+        let details = log["details"] ?? ""
+
         connectionIdCounter &+= 1
         return ConnectionLog(
             id: connectionIdCounter,
@@ -648,7 +653,9 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             process: process,
             destination: dest,
             port: port,
-            proxy: proxy
+            proxy: proxy,
+            status: status,
+            details: details
         )
     }
 

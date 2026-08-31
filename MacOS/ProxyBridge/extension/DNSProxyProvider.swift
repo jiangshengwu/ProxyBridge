@@ -67,6 +67,7 @@ class DNSProxyProvider: NEDNSProxyProvider {
                 for response in responses {
                     if let parsed = DNSParser.parse(response) {
                         DNSMapStore.shared.record(domain: parsed.domain, ips: parsed.ips)
+                        NSLog("[ProxyBridge DNS] Resolved %@ -> %@ via %@", parsed.domain, parsed.ips.joined(separator: ", "), server.hostname)
                     }
                     flow.writeDatagrams([response], sentBy: [server]) { _ in }
                 }
