@@ -97,6 +97,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         loadTrafficLoggingSetting()
         loadProfiles()
         loadProxyConfig()
+        NEDNSProxyManager.shared().removeFromPreferences { _ in }
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(occlusionChanged),
@@ -422,6 +423,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     }
     
     func startProxy() {
+        NEDNSProxyManager.shared().removeFromPreferences { _ in }
         NETransparentProxyManager.loadAllFromPreferences { [weak self] managers, error in
             guard let self = self else { return }
             
