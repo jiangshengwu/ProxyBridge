@@ -410,23 +410,16 @@ class AppProxyProvider: NETransparentProxyProvider {
         rules.removeAll()
         nextRuleId = 1
         for ruleDict in rawRules {
-            if let ruleData = try? JSONSerialization.data(withJSONObject: ruleDict),
-               var rule = try? JSONDecoder().decode(ProxyRule.self, from: ruleData) {
-                rule.ruleId = nextRuleId
-                nextRuleId += 1
-                rules.append(rule)
-            } else {
-                let processNames = ruleDict["processNames"] as? String ?? ""
-                let targetHosts = ruleDict["targetHosts"] as? String ?? ""
-                let targetPorts = ruleDict["targetPorts"] as? String ?? ""
-                let protoStr = (ruleDict["protocol"] as? String ?? ruleDict["ruleProtocol"] as? String ?? "BOTH").uppercased()
-                let proto = RuleProtocol(rawValue: protoStr) ?? .both
-                let action = ruleDict["action"] as? String ?? ruleDict["ruleAction"] as? String ?? "DIRECT"
-                let enabled = ruleDict["enabled"] as? Bool ?? true
-                let rule = ProxyRule(ruleId: nextRuleId, processNames: processNames, targetHosts: targetHosts, targetPorts: targetPorts, ruleProtocol: proto, action: action, enabled: enabled)
-                nextRuleId += 1
-                rules.append(rule)
-            }
+            let processNames = ruleDict["processNames"] as? String ?? ""
+            let targetHosts = ruleDict["targetHosts"] as? String ?? ""
+            let targetPorts = ruleDict["targetPorts"] as? String ?? ""
+            let protoStr = (ruleDict["protocol"] as? String ?? ruleDict["ruleProtocol"] as? String ?? "BOTH").uppercased()
+            let proto = RuleProtocol(rawValue: protoStr) ?? .both
+            let action = ruleDict["action"] as? String ?? ruleDict["ruleAction"] as? String ?? "DIRECT"
+            let enabled = ruleDict["enabled"] as? Bool ?? true
+            let rule = ProxyRule(ruleId: nextRuleId, processNames: processNames, targetHosts: targetHosts, targetPorts: targetPorts, ruleProtocol: proto, action: action, enabled: enabled)
+            nextRuleId += 1
+            rules.append(rule)
         }
         let count = rules.count
         rulesLock.unlock()

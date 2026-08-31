@@ -50,34 +50,69 @@ final class LocalIPCServer {
     
     private func handleConnection(_ connection: NWConnection) {
         connection.start(queue: queue)
-        readHTTPRequest(connection: connection)
+        readHTTPRequest(connection: connection, accumulatedData: Data())
     }
     
-    private func readHTTPRequest(connection: NWConnection) {
+    private func readHTTPRequest(connection: NWConnection, accumulatedData: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] content, _, isComplete, error in
-            guard let self = self, error == nil, let data = content, !data.isEmpty else {
+            guard let self = self, error == nil, let chunk = content, !chunk.isEmpty else {
                 connection.cancel()
                 return
             }
+            
+            var data = accumulatedData
+            data.append(chunk)
             
             guard let requestStr = String(data: data, encoding: .utf8) else {
-                connection.cancel()
+                if data.count < 1048576 && !isComplete {
+                    self.readHTTPRequest(connection: connection, accumulatedData: data)
+                } else {
+                    connection.cancel()
+                }
                 return
             }
             
-            let responseData = self.processRequest(requestStr: requestStr, rawData: data)
-            let httpHeader = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(responseData.count)\r\nConnection: close\r\n\r\n"
-            var fullResponse = httpHeader.data(using: .utf8)!
-            fullResponse.append(responseData)
-            
-            connection.send(content: fullResponse, completion: .contentProcessed({ _ in
-                connection.cancel()
-            }))
+            if let headerEndRange = requestStr.range(of: "\r\n\r\n") {
+                let headersStr = String(requestStr[..<headerEndRange.lowerBound])
+                var expectedContentLength = 0
+                for line in headersStr.components(separatedBy: "\r\n") {
+                    let lower = line.lowercased()
+                    if lower.hasPrefix("content-length:") {
+                        let valStr = line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)
+                        expectedContentLength = Int(valStr) ?? 0
+                    }
+                }
+                
+                let bodyOffset = headerEndRange.upperBound
+                let currentBodyStr = String(requestStr[bodyOffset...])
+                let currentBodyBytesCount = currentBodyStr.utf8.count
+                
+                if currentBodyBytesCount < expectedContentLength && !isComplete {
+                    self.readHTTPRequest(connection: connection, accumulatedData: data)
+                    return
+                }
+                
+                let bodyData = currentBodyStr.data(using: .utf8)
+                let responseData = self.processRequest(headersStr: headersStr, bodyData: bodyData)
+                let httpHeader = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(responseData.count)\r\nConnection: close\r\n\r\n"
+                var fullResponse = httpHeader.data(using: .utf8)!
+                fullResponse.append(responseData)
+                
+                connection.send(content: fullResponse, completion: .contentProcessed({ _ in
+                    connection.cancel()
+                }))
+            } else {
+                if !isComplete {
+                    self.readHTTPRequest(connection: connection, accumulatedData: data)
+                } else {
+                    connection.cancel()
+                }
+            }
         }
     }
     
-    private func processRequest(requestStr: String, rawData: Data) -> Data {
-        let lines = requestStr.components(separatedBy: "\r\n")
+    private func processRequest(headersStr: String, bodyData: Data?) -> Data {
+        let lines = headersStr.components(separatedBy: "\r\n")
         guard let firstLine = lines.first else {
             return "{\"status\":\"error\",\"message\":\"Empty request\"}".data(using: .utf8)!
         }
@@ -89,13 +124,6 @@ final class LocalIPCServer {
         
         let method = parts[0]
         let path = parts[1]
-        
-        // Extract HTTP body if POST
-        var bodyData: Data? = nil
-        if method == "POST", let bodyRange = requestStr.range(of: "\r\n\r\n") {
-            let bodyStr = String(requestStr[bodyRange.upperBound...])
-            bodyData = bodyStr.data(using: .utf8)
-        }
         
         switch (method, path) {
         case ("GET", "/logs"):

@@ -153,9 +153,22 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     }
     
     private func loadProxyConfig() {
-        if let data = UserDefaults.standard.data(forKey: "proxyConfigs"),
-           let configs = try? JSONDecoder().decode([ProxyConfig].self, from: data) {
+        let d = UserDefaults.standard
+        let active = d.string(forKey: "activeProfile") ?? "Default"
+        if let data = d.data(forKey: "proxyConfigs"),
+           let configs = try? JSONDecoder().decode([ProxyConfig].self, from: data),
+           !configs.isEmpty {
             proxyConfigs = configs
+        } else if let data = d.data(forKey: profileConfigsKey(active)),
+                  let configs = try? JSONDecoder().decode([ProxyConfig].self, from: data),
+                  !configs.isEmpty {
+            proxyConfigs = configs
+            d.set(data, forKey: "proxyConfigs")
+        } else if let data = d.data(forKey: "profile.Default.proxyConfigs"),
+                  let configs = try? JSONDecoder().decode([ProxyConfig].self, from: data),
+                  !configs.isEmpty {
+            proxyConfigs = configs
+            d.set(data, forKey: "proxyConfigs")
         } else {
             proxyConfigs = []
         }
@@ -469,10 +482,9 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
+            self.loadProxyConfig()
             self.setupLogPolling(session: session)
-            if !self.proxyConfigs.isEmpty {
-                self.sendProxyConfigsToExtension(session: session)
-            }
+            self.sendProxyConfigsToExtension(session: session)
             
             RuleManager.loadRulesFromUserDefaults(session: session) { [weak self] success, count in
                 if success && count > 0 {
