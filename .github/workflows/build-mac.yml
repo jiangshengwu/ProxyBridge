@@ -259,7 +259,7 @@ jobs:
     - name: Zip App Bundle
       run: |
         cd MacOS/ProxyBridge
-        ditto -c -k --keepParent "build/DerivedData/Build/Products/Release/ProxyBridge.app" "output/ProxyBridge-macOS-Universal.zip"
+        ditto -c -k --keepParent "output/ProxyBridge.app" "output/ProxyBridge-macOS-Universal.zip"
 
     - name: Upload PKG Artifact
       uses: actions/upload-artifact@v4
