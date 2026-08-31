@@ -12,8 +12,6 @@
 		<dict>
 			<key>com.apple.networkextension.app-proxy</key>
 			<string>AppProxyProvider</string>
-			<key>com.apple.networkextension.dns-proxy</key>
-			<string>DNSProxyProvider</string>
 		</dict>
 	</dict>
 </dict>
