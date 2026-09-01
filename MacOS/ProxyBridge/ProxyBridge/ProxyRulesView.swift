@@ -94,13 +94,19 @@ struct ProxyRulesView: View {
     @State private var selectedRuleIds: Set<String> = []
     @State private var showAddRule = false
     @State private var editingRule: ProxyRule?
+    @State private var draggedRuleId: String?
     
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Proxy Rules")
-                    .font(.title2)
-                    .fontWeight(.semibold)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Proxy Rules")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    Text("Rules are evaluated from top to bottom. Drag Priority to reorder.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
                 
                 Spacer()
                 
@@ -209,11 +215,32 @@ struct ProxyRulesView: View {
                     }
                     .width(60)
 
-                    TableColumn("SR") { rule in
+                    TableColumn("Priority") { rule in
                         let index = (rules.firstIndex(where: { $0.id == rule.id }) ?? 0) + 1
-                        Text(verbatim: "\(index)")
+                        HStack(spacing: 6) {
+                            Image(systemName: "line.3.horizontal")
+                                .foregroundColor(.secondary)
+                            Text(verbatim: "\(index)")
+                                .monospacedDigit()
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .onDrag {
+                            draggedRuleId = rule.id
+                            return NSItemProvider(object: rule.id as NSString)
+                        }
+                        .onDrop(
+                            of: [UTType.plainText],
+                            delegate: RulePriorityDropDelegate(
+                                targetRuleId: rule.id,
+                                rules: $rules,
+                                draggedRuleId: $draggedRuleId,
+                                onReorder: finishRuleReorder
+                            )
+                        )
+                        .help("Drag to change rule priority")
                     }
-                    .width(32)
+                    .width(64)
 
                     TableColumn("Name") { rule in
                         Text(rule.name.isEmpty ? "=" : rule.name)
@@ -351,6 +378,11 @@ struct ProxyRulesView: View {
         saveAndSync(activityMessage: "Rule \(enabled ? "enabled" : "disabled"): \(ruleActivityName(rule))")
     }
 
+    private func finishRuleReorder(_ ruleId: String) {
+        guard let index = rules.firstIndex(where: { $0.id == ruleId }) else { return }
+        saveAndSync(activityMessage: "Rule priority changed: \(ruleActivityName(rules[index])) → #\(index + 1)")
+    }
+
     private func ruleActivityName(_ rule: ProxyRule) -> String {
         let name = rule.name.trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty ? "unnamed rule" : name
@@ -409,6 +441,37 @@ struct ProxyRulesView: View {
         } catch {
             print("Failed to import rules: \(error)")
         }
+    }
+}
+
+private struct RulePriorityDropDelegate: DropDelegate {
+    let targetRuleId: String
+    @Binding var rules: [ProxyRule]
+    @Binding var draggedRuleId: String?
+    let onReorder: (String) -> Void
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let draggedRuleId,
+              draggedRuleId != targetRuleId,
+              let sourceIndex = rules.firstIndex(where: { $0.id == draggedRuleId }),
+              let targetIndex = rules.firstIndex(where: { $0.id == targetRuleId }) else {
+            self.draggedRuleId = nil
+            return false
+        }
+
+        withAnimation(.easeInOut(duration: 0.15)) {
+            rules.move(
+                fromOffsets: IndexSet(integer: sourceIndex),
+                toOffset: targetIndex > sourceIndex ? targetIndex + 1 : targetIndex
+            )
+        }
+        onReorder(draggedRuleId)
+        self.draggedRuleId = nil
+        return true
     }
 }
 

@@ -1685,8 +1685,6 @@ class AppProxyProvider: NETransparentProxyProvider {
         let currentRules = rules
         rulesLock.unlock()
 
-        var wildcardRule: MatchedRule? = nil
-
         for rule in currentRules {
             guard rule.enabled else { continue }
 
@@ -1700,17 +1698,14 @@ class AppProxyProvider: NETransparentProxyProvider {
                 let hasIpFilter = (rule.targetHosts != "*" && !rule.targetHosts.isEmpty)
                 let hasPortFilter = (rule.targetPorts != "*" && !rule.targetPorts.isEmpty)
 
-                if hasIpFilter || hasPortFilter {
-                    // udp has no destination here, so a filtered wildcard can't match
-                    if checkIpPort, rule.matchesHost(ip: destination, domains: domains), rule.matchesPort(port) {
+                if checkIpPort {
+                    if rule.matchesHost(ip: destination, domains: domains), rule.matchesPort(port) {
                         return MatchedRule(rule: rule, processMatch: .any)
                     }
-                    continue
-                }
-
-                // pure wildcard, keep the first one as a fallback
-                if wildcardRule == nil {
-                    wildcardRule = MatchedRule(rule: rule, processMatch: .any)
+                } else if !hasIpFilter && !hasPortFilter {
+                    // UDP has no destination here. Only a pure wildcard can
+                    // match; filtered wildcard rules remain TCP-only.
+                    return MatchedRule(rule: rule, processMatch: .any)
                 }
                 continue
             }
@@ -1727,10 +1722,6 @@ class AppProxyProvider: NETransparentProxyProvider {
             }
         }
 
-        if let wildcardRule = wildcardRule {
-            return wildcardRule
-        }
-        
         return nil
     }
     
