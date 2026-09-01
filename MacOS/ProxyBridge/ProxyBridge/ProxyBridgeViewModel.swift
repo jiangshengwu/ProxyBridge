@@ -27,6 +27,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         f.dateFormat = "HH:mm:ss"
         return f
     }()
+    private let extensionTimestampFormatter = ISO8601DateFormatter()
     private var connectionIdCounter: Int = 0
     private var activityIdCounter: Int = 0
     private var lastActivitySignature: String?
@@ -828,10 +829,17 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         activityIdCounter &+= 1
         return ActivityLog(
             id: activityIdCounter,
-            timestamp: timestamp,
+            timestamp: normalizedActivityTimestamp(timestamp),
             level: level,
             message: message
         )
+    }
+
+    private func normalizedActivityTimestamp(_ timestamp: String) -> String {
+        guard let date = extensionTimestampFormatter.date(from: timestamp) else {
+            return timestamp
+        }
+        return timestampFormatter.string(from: date)
     }
 
     func sendProxyConfigsToExtension(session: NETunnelProviderSession?) {
