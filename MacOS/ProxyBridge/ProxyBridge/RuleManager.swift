@@ -126,7 +126,7 @@ struct RuleManager {
         completion: @escaping (Bool, Int) -> Void
     ) {
         guard index < rules.count else {
-            DispatchQueue.main.async { completion(true, added) }
+            DispatchQueue.main.async { completion(added == rules.count, added) }
             return
         }
         let rule = rules[index]

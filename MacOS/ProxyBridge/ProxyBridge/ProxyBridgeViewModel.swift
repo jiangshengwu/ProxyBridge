@@ -12,6 +12,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     
     var tunnelSession: NETunnelProviderSession?
     private var logTimer: Timer?
+    private var tunnelStatusObserver: NSObjectProtocol?
     @Published private(set) var proxyConfigs: [ProxyConfig] = []
     @Published private(set) var profiles: [String] = []
     @Published private(set) var activeProfile: String = "Default"
@@ -507,10 +508,14 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             self.sendProxyConfigsToExtension(session: session)
 
             RuleManager.loadRulesFromUserDefaults(session: session) { [weak self] success, count in
-                if success && count > 0 {
-                    self?.addLog("INFO", "Loaded \(count) rule(s) from local storage into extension")
-                } else {
-                    self?.addLog("INFO", "Extension rules synced (count: \(count))")
+                DispatchQueue.main.async {
+                    if success && count > 0 {
+                        self?.addLog("INFO", "Loaded \(count) rule(s) from local storage into extension")
+                    } else if success {
+                        self?.addLog("INFO", "Extension rules synced (count: 0)")
+                    } else {
+                        self?.addLog("ERROR", "Failed to sync saved rules to extension")
+                    }
                 }
             }
         }
@@ -528,10 +533,18 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             guard let session = manager.connection as? NETunnelProviderSession else { return }
             self.tunnelSession = session
 
+            let ipcAuthToken = LocalIPCClient.shared.rotateAuthorizationToken()
             var isConfigured = false
-            func handleStatusChange(status: NEVPNStatus) {
+            var hasConnected = false
+            let handleStatusChange: (NEVPNStatus) -> Void = { [weak self] status in
+                guard let self = self else { return }
                 switch status {
                 case .connected:
+                    // startTunnel() commonly reports an initial .disconnected
+                    // state before .connecting. Restore the token here as an
+                    // additional guard so startup status churn cannot break IPC.
+                    LocalIPCClient.shared.setAuthorizationToken(ipcAuthToken)
+                    hasConnected = true
                     self.addLog("INFO", "Tunnel status: CONNECTED")
                     if !isConfigured {
                         isConfigured = true
@@ -543,46 +556,57 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
                     LocalIPCClient.shared.setAuthorizationToken(nil)
                     self.addLog("INFO", "Tunnel status: DISCONNECTING")
                 case .disconnected:
+                    let wasConnected = hasConnected
                     isConfigured = false
-                    LocalIPCClient.shared.setAuthorizationToken(nil)
+                    hasConnected = false
+                    // The first .disconnected event is part of normal startup.
+                    // Clearing here used to remove the freshly generated token
+                    // before the extension's HTTP listener became ready.
+                    if wasConnected {
+                        LocalIPCClient.shared.setAuthorizationToken(nil)
+                        self.isProxyActive = false
+                    }
                     self.addLog("INFO", "Tunnel status: DISCONNECTED")
                 case .reasserting:
                     isConfigured = false
                     self.addLog("INFO", "Tunnel status: REASSERTING")
                 case .invalid:
                     isConfigured = false
+                    hasConnected = false
                     LocalIPCClient.shared.setAuthorizationToken(nil)
+                    self.isProxyActive = false
                     self.addLog("WARN", "Tunnel status: INVALID")
                 @unknown default:
                     break
                 }
             }
 
-            NotificationCenter.default.addObserver(
+            if let observer = self.tunnelStatusObserver {
+                NotificationCenter.default.removeObserver(observer)
+            }
+            self.tunnelStatusObserver = NotificationCenter.default.addObserver(
                 forName: .NEVPNStatusDidChange,
-                object: nil,
+                object: session,
                 queue: .main
-            ) { [weak self] notif in
-                guard let self = self else { return }
+            ) { notif in
                 if let conn = notif.object as? NEVPNConnection {
-                    handleStatusChange(status: conn.status)
+                    handleStatusChange(conn.status)
                 } else {
-                    handleStatusChange(status: session.status)
+                    handleStatusChange(session.status)
                 }
             }
 
             do {
-                let ipcAuthToken = LocalIPCClient.shared.rotateAuthorizationToken()
                 try session.startTunnel(options: ["ipcAuthToken": ipcAuthToken as NSString])
                 self.isProxyActive = true
                 self.addLog("INFO", "Proxy tunnel started")
-                handleStatusChange(status: session.status)
+                handleStatusChange(session.status)
 
                 // Periodic fallback checks in case notification was missed
                 for delay in [0.5, 1.0, 2.0, 3.0, 5.0] {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                        guard let self = self, !isConfigured else { return }
-                        handleStatusChange(status: session.status)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                        guard !isConfigured else { return }
+                        handleStatusChange(session.status)
                     }
                 }
             } catch {
