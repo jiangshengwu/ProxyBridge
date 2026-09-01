@@ -32,7 +32,7 @@ extension ProxyBridgeViewModel.ConnectionLog {
     var isRejected: Bool {
         let p = proxy.lowercased()
         let s = status.uppercased()
-        return p == "block" || s == "BLOCKED" || s == "REJECTED" || s == "FAILED" || s == "ERROR"
+        return p == "block" || s == "BLOCKED" || s == "REJECTED"
     }
 }
 
@@ -482,10 +482,12 @@ struct ConnectionsView: View {
                 switch c.status.uppercased() {
                 case "CONNECTED", "SUCCESS", "OPEN":
                     statusColor = .systemGreen
-                case "FAILED", "ERROR", "REJECTED":
+                case "FAILED", "ERROR", "REJECTED", "AUTH_FAILED", "REFUSED":
                     statusColor = .systemRed
-                case "CONNECTING":
+                case "CONNECTING", "TIMEOUT", "UNREACHABLE", "RESET":
                     statusColor = .systemYellow
+                case "CLOSED", "CANCELLED":
+                    statusColor = .secondaryLabelColor
                 case "BLOCKED":
                     statusColor = .systemRed
                 case "DIRECT":
