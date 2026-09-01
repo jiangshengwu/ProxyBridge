@@ -29,10 +29,60 @@ verify_universal() {
     echo "  universal ok: $binary ($archs)"
 }
 
+has_entitlement() {
+    local bundle="$1"
+    local key="$2"
+    codesign -d --entitlements :- "$bundle" 2>/dev/null \
+        | plutil -extract "$key" xml1 -o - - >/dev/null 2>&1
+}
+
+ensure_installable_signatures() {
+    local extension_bundle="$1"
+    local app_install_key='com\.apple\.developer\.system-extension\.install'
+    local network_extension_key='com\.apple\.developer\.networking\.networkextension'
+    local app_group_key='com\.apple\.security\.application-groups'
+
+    if has_entitlement "$APP_PATH" "$app_install_key" \
+        && has_entitlement "$APP_PATH" "$network_extension_key" \
+        && has_entitlement "$APP_PATH" "$app_group_key" \
+        && has_entitlement "$extension_bundle" "$network_extension_key" \
+        && has_entitlement "$extension_bundle" "$app_group_key"; then
+        codesign --verify --deep --strict "$APP_PATH"
+        echo "  signing ok: required entitlements are present"
+        return
+    fi
+
+    if [ -n "${SIGNING_IDENTITY:-}" ]; then
+        echo "Error: signed release app is missing required system extension entitlements"
+        echo "Re-export it with the app and extension provisioning profiles before packaging."
+        exit 1
+    fi
+
+    echo "Applying complete ad-hoc signatures for local installation..."
+    codesign --force --sign - --options runtime \
+        --entitlements "$SCRIPT_DIR/extension/extensionRelease.entitlements" \
+        "$extension_bundle"
+    codesign --force --sign - --options runtime \
+        --entitlements "$SCRIPT_DIR/ProxyBridge/ProxyBridgeRelease.entitlements" \
+        "$APP_PATH"
+    codesign --verify --deep --strict "$APP_PATH"
+
+    if ! has_entitlement "$APP_PATH" "$app_install_key"; then
+        echo "Error: ad-hoc signing did not embed the system extension install entitlement"
+        exit 1
+    fi
+    echo "  signing ok: ad-hoc bundle includes required entitlements"
+}
+
 verify_universal "$APP_PATH/Contents/MacOS/ProxyBridge"
 EXT_BIN="$APP_PATH/Contents/Library/SystemExtensions/com.interceptsuite.ProxyBridge.extension.systemextension/Contents/MacOS/com.interceptsuite.ProxyBridge.extension"
 if [ -f "$EXT_BIN" ]; then
     verify_universal "$EXT_BIN"
+fi
+
+EXT_BUNDLE="$APP_PATH/Contents/Library/SystemExtensions/com.interceptsuite.ProxyBridge.extension.systemextension"
+if [ -d "$EXT_BUNDLE" ]; then
+    ensure_installable_signatures "$EXT_BUNDLE"
 fi
 
 mkdir -p "$SCRIPT_DIR/build/component"
