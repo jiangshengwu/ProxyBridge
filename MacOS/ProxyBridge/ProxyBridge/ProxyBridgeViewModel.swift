@@ -499,74 +499,19 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     private func onTunnelConnected(session: NETunnelProviderSession) {
         self.tunnelSession = session
         self.isProxyActive = true
-        LocalIPCClient.shared.setAuthorizationToken(nil)
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
             self.loadProxyConfig()
-            self.configureLocalIPC(session: session) { [weak self] authenticated in
-                guard let self = self else { return }
-                if !authenticated {
-                    self.addLog("WARN", "Local IPC authentication unavailable; using provider messaging fallback")
-                }
-                self.setupLogPolling(session: session)
-                self.sendProxyConfigsToExtension(session: session)
+            self.setupLogPolling(session: session)
+            self.sendProxyConfigsToExtension(session: session)
 
-                RuleManager.loadRulesFromUserDefaults(session: session) { [weak self] success, count in
-                    if success && count > 0 {
-                        self?.addLog("INFO", "Loaded \(count) rule(s) from local storage into extension")
-                    } else {
-                        self?.addLog("INFO", "Extension rules synced (count: \(count))")
-                    }
+            RuleManager.loadRulesFromUserDefaults(session: session) { [weak self] success, count in
+                if success && count > 0 {
+                    self?.addLog("INFO", "Loaded \(count) rule(s) from local storage into extension")
+                } else {
+                    self?.addLog("INFO", "Extension rules synced (count: \(count))")
                 }
-            }
-        }
-    }
-
-    private func configureLocalIPC(
-        session: NETunnelProviderSession,
-        attempt: Int = 0,
-        completion: @escaping (Bool) -> Void
-    ) {
-        let message: [String: Any] = ["action": "getIPCAuthToken"]
-        guard let data = try? JSONSerialization.data(withJSONObject: message) else {
-            completion(false)
-            return
-        }
-
-        do {
-            try session.sendProviderMessage(data) { [weak self] response in
-                let token: String? = response.flatMap { data in
-                    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                          object["status"] as? String == "ok" else {
-                        return nil
-                    }
-                    return object["token"] as? String
-                }
-
-                DispatchQueue.main.async {
-                    guard let self = self else { return }
-                    if let token = token, !token.isEmpty {
-                        LocalIPCClient.shared.setAuthorizationToken(token)
-                        completion(true)
-                    } else if attempt < 2 {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                            self.configureLocalIPC(session: session, attempt: attempt + 1, completion: completion)
-                        }
-                    } else {
-                        LocalIPCClient.shared.setAuthorizationToken(nil)
-                        completion(false)
-                    }
-                }
-            }
-        } catch {
-            if attempt < 2 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-                    self?.configureLocalIPC(session: session, attempt: attempt + 1, completion: completion)
-                }
-            } else {
-                LocalIPCClient.shared.setAuthorizationToken(nil)
-                completion(false)
             }
         }
     }
@@ -603,7 +548,6 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
                     self.addLog("INFO", "Tunnel status: DISCONNECTED")
                 case .reasserting:
                     isConfigured = false
-                    LocalIPCClient.shared.setAuthorizationToken(nil)
                     self.addLog("INFO", "Tunnel status: REASSERTING")
                 case .invalid:
                     isConfigured = false
@@ -628,7 +572,8 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             }
 
             do {
-                try session.startTunnel()
+                let ipcAuthToken = LocalIPCClient.shared.rotateAuthorizationToken()
+                try session.startTunnel(options: ["ipcAuthToken": ipcAuthToken as NSString])
                 self.isProxyActive = true
                 self.addLog("INFO", "Proxy tunnel started")
                 handleStatusChange(status: session.status)
@@ -641,6 +586,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
                     }
                 }
             } catch {
+                LocalIPCClient.shared.setAuthorizationToken(nil)
                 self.addLog("ERROR", "Failed to start tunnel: \(error.localizedDescription)")
             }
         }

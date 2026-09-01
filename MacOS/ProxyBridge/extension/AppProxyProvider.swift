@@ -480,7 +480,11 @@ class AppProxyProvider: NETransparentProxyProvider {
             self?.nextRuleId = 1
             self?.rulesLock.unlock()
         }
-        LocalIPCServer.shared.start()
+        if let ipcAuthToken = initialDict["ipcAuthToken"] as? String {
+            LocalIPCServer.shared.start(authorizationToken: ipcAuthToken)
+        } else {
+            log("Local IPC disabled: missing startup authorization token", level: "ERROR")
+        }
 
         let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
         
@@ -545,16 +549,6 @@ class AppProxyProvider: NETransparentProxyProvider {
         }
         
         switch action {
-        case "getIPCAuthToken":
-            let token = LocalIPCServer.shared.authorizationToken
-            guard !token.isEmpty else {
-                completionHandler?(try? JSONSerialization.data(withJSONObject: ["status": "error"]))
-                return
-            }
-            completionHandler?(try? JSONSerialization.data(withJSONObject: [
-                "status": "ok",
-                "token": token
-            ]))
         case "getLogs":
             logQueueLock.lock()
             if logCount > 0 {
@@ -1639,4 +1633,3 @@ class AppProxyProvider: NETransparentProxyProvider {
         appendLog(.connection(proto: `protocol`, process: process, destination: destination, port: port, proxy: proxy, status: status, details: details))
     }
 }
-

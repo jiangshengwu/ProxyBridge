@@ -1,6 +1,5 @@
 import Foundation
 import Network
-import Security
 
 final class LocalIPCServer {
     static let shared = LocalIPCServer()
@@ -34,9 +33,13 @@ final class LocalIPCServer {
     var onSetTrafficLogging: ((Bool) -> Void)?
     var onClearRules: (() -> Void)?
 
-    func start() {
+    func start(authorizationToken: String) {
         guard listener == nil else { return }
-        rotateAuthorizationToken()
+        guard authorizationToken.utf8.count >= 32 else {
+            NSLog("[ProxyBridge IPC] Refusing to start without a strong authorization token")
+            return
+        }
+        setAuthorizationToken(authorizationToken)
 
         do {
             let params = NWParameters.tcp
@@ -76,16 +79,7 @@ final class LocalIPCServer {
         clearAuthorizationToken()
     }
 
-    private func rotateAuthorizationToken() {
-        var bytes = [UInt8](repeating: 0, count: 32)
-        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
-        let newToken: String
-        if status == errSecSuccess {
-            newToken = Data(bytes).base64EncodedString()
-        } else {
-            newToken = UUID().uuidString + UUID().uuidString
-        }
-
+    private func setAuthorizationToken(_ newToken: String) {
         tokenLock.lock()
         token = newToken
         tokenLock.unlock()

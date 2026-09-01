@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 final class LocalIPCClient {
     static let shared = LocalIPCClient()
@@ -18,6 +19,20 @@ final class LocalIPCClient {
         tokenLock.lock()
         authorizationToken = token?.trimmingCharacters(in: .whitespacesAndNewlines)
         tokenLock.unlock()
+    }
+
+    @discardableResult
+    func rotateAuthorizationToken() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        let token: String
+        if status == errSecSuccess {
+            token = Data(bytes).base64EncodedString()
+        } else {
+            token = UUID().uuidString + UUID().uuidString
+        }
+        setAuthorizationToken(token)
+        return token
     }
 
     private func authorize(_ request: inout URLRequest) -> Bool {
