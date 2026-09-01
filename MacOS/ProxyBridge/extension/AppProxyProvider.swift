@@ -47,17 +47,43 @@ struct ProxyRule: Codable {
         self.enabled = enabled
     }
     
-    func matchesProcess(bundleId: String, processName: String?) -> Bool {
-        if Self.matchProcessList(processNames, processPath: bundleId) {
-            return true
-        }
-        
-        if let procName = processName {
-            if Self.matchProcessList(processNames, processPath: procName) {
+    func matchesProcess(bundleId: String, processName: String?, executablePath: String?) -> Bool {
+        if processNames.isEmpty || processNames == "*" { return true }
+
+        let appBundleNames = executablePath.map(Self.appBundleNames) ?? []
+        let patterns = processNames.components(separatedBy: CharacterSet(charactersIn: ",;"))
+
+        for rawPattern in patterns {
+            let pattern = rawPattern.trimmingCharacters(in: .whitespacesAndNewlines)
+            if pattern.lowercased().hasSuffix(".app") {
+                // App rules are exact names, not globs. Match any containing
+                // app bundle so both the main executable and nested helpers
+                // belong to Antigravity.app, for example.
+                guard !pattern.contains("*") else { continue }
+                if appBundleNames.contains(where: { $0.caseInsensitiveCompare(pattern) == .orderedSame }) {
+                    return true
+                }
+                continue
+            }
+
+            if Self.matchProcessPattern(
+                pattern,
+                processPath: bundleId,
+                filename: (bundleId as NSString).lastPathComponent
+            ) {
+                return true
+            }
+
+            if let processName,
+               Self.matchProcessPattern(
+                   pattern,
+                   processPath: processName,
+                   filename: (processName as NSString).lastPathComponent
+               ) {
                 return true
             }
         }
-        
+
         return false
     }
     
@@ -91,21 +117,9 @@ struct ProxyRule: Codable {
         return Self.matchPortList(targetPorts, port: port)
     }
     
-    private static func matchProcessList(_ processList: String, processPath: String) -> Bool {
-        if processList.isEmpty || processList == "*" {
-            return true
-        }
-        
-        let filename = (processPath as NSString).lastPathComponent
-        let patterns = processList.components(separatedBy: CharacterSet(charactersIn: ",;"))
-        
-        for pattern in patterns {
-            let trimmed = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
-            if matchProcessPattern(trimmed, processPath: processPath, filename: filename) {
-                return true
-            }
-        }
-        return false
+    private static func appBundleNames(_ executablePath: String) -> [String] {
+        let pathComponents = (executablePath as NSString).pathComponents
+        return pathComponents.dropLast().filter { $0.lowercased().hasSuffix(".app") }
     }
     
     private static func matchProcessPattern(_ pattern: String, processPath: String, filename: String) -> Bool {
@@ -300,12 +314,13 @@ class AppProxyProvider: NETransparentProxyProvider {
     private let logQueueLock = NSLock()
     private let dateFormatter: ISO8601DateFormatter = ISO8601DateFormatter()
     
-    // cache by pid so we don't call proc_pidpath on every connection
-    private var pidCache: [pid_t: String] = [:]
+    // cache the full executable path by pid so app rules can inspect containing
+    // .app components without calling proc_pidpath on every connection
+    private var processPathCache: [pid_t: String] = [:]
     private let pidCacheLock = NSLock()
     private static let pidCacheMaxSize = 256
     
-    private func getProcessName(from metaData: NEFlowMetaData) -> String? {
+    private func getProcessPath(from metaData: NEFlowMetaData) -> String? {
         guard let auditTokenData = metaData.sourceAppAuditToken else {
             return nil
         }
@@ -322,7 +337,7 @@ class AppProxyProvider: NETransparentProxyProvider {
         guard pid > 0 else { return nil }
         
         pidCacheLock.lock()
-        if let cached = pidCache[pid] {
+        if let cached = processPathCache[pid] {
             pidCacheLock.unlock()
             return cached
         }
@@ -334,17 +349,16 @@ class AppProxyProvider: NETransparentProxyProvider {
         }
         
         let fullPath = String(cString: pathBuffer)
-        let processName = (fullPath as NSString).lastPathComponent
         
         // store in cache, evict everything if full - processes rarely hit this
         pidCacheLock.lock()
-        if pidCache.count >= AppProxyProvider.pidCacheMaxSize {
-            pidCache.removeAll(keepingCapacity: true)
+        if processPathCache.count >= AppProxyProvider.pidCacheMaxSize {
+            processPathCache.removeAll(keepingCapacity: true)
         }
-        pidCache[pid] = processName
+        processPathCache[pid] = fullPath
         pidCacheLock.unlock()
         
-        return processName
+        return fullPath
     }
     
     // guarded by its own lock, the old OSAtomic compare-and-swap setter could
@@ -668,10 +682,10 @@ class AppProxyProvider: NETransparentProxyProvider {
     
     private func handleTCPFlow(_ flow: NEAppProxyTCPFlow) -> Bool {
         let metaData = flow.metaData
-        let processPath = metaData.sourceAppSigningIdentifier
+        let signingIdentifier = metaData.sourceAppSigningIdentifier
         
         // never proxy our own traffic, it would loop
-        if processPath == "com.interceptsuite.ProxyBridge" || processPath == "com.interceptsuite.ProxyBridge.extension" {
+        if signingIdentifier == "com.interceptsuite.ProxyBridge" || signingIdentifier == "com.interceptsuite.ProxyBridge.extension" {
             return false
         }
 
@@ -693,8 +707,9 @@ class AppProxyProvider: NETransparentProxyProvider {
             return false
         }
         
-        let processName = getProcessName(from: metaData)
-        let displayName = processName ?? processPath
+        let executablePath = getProcessPath(from: metaData)
+        let processName = executablePath.map { ($0 as NSString).lastPathComponent }
+        let displayName = processName ?? signingIdentifier
         
         // domains that resolved to this ip (from the dns proxy), used for domain
         // rules and to show the hostname in the log instead of the raw ip
@@ -711,7 +726,7 @@ class AppProxyProvider: NETransparentProxyProvider {
             return false
         }
 
-        let matchedRule = findMatchingRule(bundleId: processPath, processName: processName, destination: destination, port: portNum, connectionProtocol: .tcp, checkIpPort: true, domains: domains)
+        let matchedRule = findMatchingRule(bundleId: signingIdentifier, processName: processName, executablePath: executablePath, destination: destination, port: portNum, connectionProtocol: .tcp, checkIpPort: true, domains: domains)
 
         if let rule = matchedRule {
             switch rule.action {
@@ -755,11 +770,12 @@ class AppProxyProvider: NETransparentProxyProvider {
     
     private func handleUDPFlow(_ flow: NEAppProxyUDPFlow) -> Bool {
         let metaData = flow.metaData
-        let processPath = metaData.sourceAppSigningIdentifier
-        let processName = getProcessName(from: metaData)
-        let displayName = processName ?? processPath
+        let signingIdentifier = metaData.sourceAppSigningIdentifier
+        let executablePath = getProcessPath(from: metaData)
+        let processName = executablePath.map { ($0 as NSString).lastPathComponent }
+        let displayName = processName ?? signingIdentifier
         
-        if processPath == "com.interceptsuite.ProxyBridge" || processPath == "com.interceptsuite.ProxyBridge.extension" {
+        if signingIdentifier == "com.interceptsuite.ProxyBridge" || signingIdentifier == "com.interceptsuite.ProxyBridge.extension" {
             return false
         }
         
@@ -772,7 +788,7 @@ class AppProxyProvider: NETransparentProxyProvider {
             return false
         }
 
-        let matchedRule = findMatchingRule(bundleId: processPath, processName: processName, destination: "", port: 0, connectionProtocol: .udp, checkIpPort: false)
+        let matchedRule = findMatchingRule(bundleId: signingIdentifier, processName: processName, executablePath: executablePath, destination: "", port: 0, connectionProtocol: .udp, checkIpPort: false)
 
         if let rule = matchedRule {
             let action = rule.action
@@ -1594,7 +1610,7 @@ class AppProxyProvider: NETransparentProxyProvider {
         }
     }
     
-    private func findMatchingRule(bundleId: String, processName: String?, destination: String, port: UInt16, connectionProtocol: RuleProtocol, checkIpPort: Bool, domains: [String] = []) -> ProxyRule? {
+    private func findMatchingRule(bundleId: String, processName: String?, executablePath: String?, destination: String, port: UInt16, connectionProtocol: RuleProtocol, checkIpPort: Bool, domains: [String] = []) -> ProxyRule? {
         rulesLock.lock()
         let currentRules = rules
         rulesLock.unlock()
@@ -1629,7 +1645,7 @@ class AppProxyProvider: NETransparentProxyProvider {
                 continue
             }
 
-            if rule.matchesProcess(bundleId: bundleId, processName: processName) {
+            if rule.matchesProcess(bundleId: bundleId, processName: processName, executablePath: executablePath) {
                 if checkIpPort {
                     if rule.matchesHost(ip: destination, domains: domains) && rule.matchesPort(port) {
                         return rule

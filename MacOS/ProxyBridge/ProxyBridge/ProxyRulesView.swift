@@ -458,7 +458,12 @@ struct RuleEditorView: View {
                         hint: "Shown in the rules list. Leave empty if you don't need one."
                     )
 
-                    processField
+                    formField(
+                        label: "Process / Bundle Identifier",
+                        placeholder: "*",
+                        text: $processNames,
+                        hint: "Matches bundle ids, process names, or exact .app names. Examples: Antigravity.app; curl; *chrome*; *"
+                    )
                     
                     formField(
                         label: "Target hosts",
@@ -554,94 +559,6 @@ struct RuleEditorView: View {
         .frame(width: 600, height: 620)
     }
 
-    private var processField: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Process / Bundle Identifier")
-                .fontWeight(.medium)
-            HStack(spacing: 8) {
-                Button(action: chooseApplications) {
-                    Label("Choose App", systemImage: "app.badge")
-                }
-                TextField("*", text: $processNames)
-                    .textFieldStyle(.roundedBorder)
-            }
-            Text("Matches bundle ids or process names separated by semicolons. Choose App adds the main executable and embedded helper executables.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-    }
-
-    private func chooseApplications() {
-        let panel = NSOpenPanel()
-        panel.title = "Choose Applications"
-        panel.message = "Select one or more apps to add their executable names to this rule."
-        panel.prompt = "Choose"
-        panel.allowedContentTypes = [.applicationBundle]
-        panel.allowsMultipleSelection = true
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.resolvesAliases = true
-        panel.directoryURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
-
-        guard panel.runModal() == .OK else { return }
-
-        let executableNames = panel.urls.flatMap(applicationExecutableNames)
-        guard !executableNames.isEmpty else {
-            let alert = NSAlert()
-            alert.messageText = "No application executables found"
-            alert.informativeText = "The selected item does not contain a readable CFBundleExecutable."
-            alert.alertStyle = .warning
-            alert.runModal()
-            return
-        }
-
-        mergeProcessNames(executableNames)
-    }
-
-    private func applicationExecutableNames(at applicationURL: URL) -> [String] {
-        var names: [String] = []
-
-        func appendExecutable(from bundleURL: URL) {
-            guard let bundle = Bundle(url: bundleURL),
-                  let executable = bundle.object(forInfoDictionaryKey: "CFBundleExecutable") as? String,
-                  !executable.isEmpty else {
-                return
-            }
-            names.append(executable)
-        }
-
-        appendExecutable(from: applicationURL)
-
-        let contentsURL = applicationURL.appendingPathComponent("Contents", isDirectory: true)
-        let bundleExtensions: Set<String> = ["app", "xpc", "appex"]
-        if let enumerator = FileManager.default.enumerator(
-            at: contentsURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        ) {
-            for case let url as URL in enumerator {
-                guard bundleExtensions.contains(url.pathExtension.lowercased()) else { continue }
-                appendExecutable(from: url)
-            }
-        }
-
-        var seen = Set<String>()
-        return names.filter { seen.insert($0.lowercased()).inserted }
-    }
-
-    private func mergeProcessNames(_ executableNames: [String]) {
-        let current = processNames
-            .components(separatedBy: CharacterSet(charactersIn: ",;"))
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty && $0 != "*" }
-
-        var seen = Set<String>()
-        let merged = (current + executableNames).filter {
-            seen.insert($0.lowercased()).inserted
-        }
-        processNames = merged.joined(separator: "; ")
-    }
-    
     @ViewBuilder
     private func formField(label: String, placeholder: String, text: Binding<String>, hint: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
