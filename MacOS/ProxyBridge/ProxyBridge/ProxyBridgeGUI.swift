@@ -371,12 +371,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
 // grabs the main SwiftUI window so the app delegate can intercept its close
 struct WindowAccessor: NSViewRepresentable {
+    private static let defaultWindowSizeAppliedKey = "mainWindowTwoThirdsSizeApplied"
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
             guard let window = view.window else { return }
             AppDelegate.mainWindow = window
             window.delegate = AppDelegate.shared
+            Self.applyDefaultWindowSizeIfNeeded(to: window)
             // launched at login, keep it hidden in the menu bar
             if AppDelegate.startHidden {
                 AppDelegate.startHidden = false
@@ -387,5 +390,24 @@ struct WindowAccessor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {}
-}
 
+    private static func applyDefaultWindowSizeIfNeeded(to window: NSWindow) {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: defaultWindowSizeAppliedKey),
+              let screen = window.screen ?? NSScreen.main else {
+            return
+        }
+
+        let visibleFrame = screen.visibleFrame
+        let size = NSSize(
+            width: max(800, visibleFrame.width * 2 / 3),
+            height: max(600, visibleFrame.height * 2 / 3)
+        )
+        let origin = NSPoint(
+            x: visibleFrame.midX - size.width / 2,
+            y: visibleFrame.midY - size.height / 2
+        )
+        window.setFrame(NSRect(origin: origin, size: size), display: true)
+        defaults.set(true, forKey: defaultWindowSizeAppliedKey)
+    }
+}

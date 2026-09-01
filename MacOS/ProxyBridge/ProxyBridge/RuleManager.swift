@@ -5,6 +5,7 @@ struct RuleManager {
     
     static func addRule(
         session: NETunnelProviderSession,
+        name: String = "",
         processNames: String,
         targetHosts: String,
         targetPorts: String,
@@ -17,6 +18,7 @@ struct RuleManager {
             session: session,
             action: "addRule",
             params: [
+                "name": name,
                 "processNames": processNames,
                 "targetHosts": targetHosts,
                 "targetPorts": targetPorts,
@@ -132,6 +134,7 @@ struct RuleManager {
         let rule = rules[index]
         addRule(
             session: session,
+            name: rule["name"] as? String ?? "",
             processNames: rule["processNames"] as? String ?? "",
             targetHosts: rule["targetHosts"] as? String ?? "",
             targetPorts: rule["targetPorts"] as? String ?? "",

@@ -225,7 +225,11 @@ struct ContentView: View {
                 c.port.localizedCaseInsensitiveContains(q) ||
                 c.proxy.localizedCaseInsensitiveContains(q) ||
                 c.status.localizedCaseInsensitiveContains(q) ||
-                c.details.localizedCaseInsensitiveContains(q)
+                c.details.localizedCaseInsensitiveContains(q) ||
+                c.ruleId.localizedCaseInsensitiveContains(q) ||
+                c.ruleName.localizedCaseInsensitiveContains(q) ||
+                c.matchType.localizedCaseInsensitiveContains(q) ||
+                c.matchValue.localizedCaseInsensitiveContains(q)
         }
     }
 
@@ -491,6 +495,8 @@ struct ConnectionsView: View {
                 }
                 out.append(LogText.seg(" [\(c.status)]", statusColor))
             }
+            let ruleColor: NSColor = c.matchType.uppercased() == "DEFAULT" ? .secondaryLabelColor : .systemTeal
+            out.append(LogText.seg(" [\(c.ruleMatchLabel)]", ruleColor))
             if !c.details.isEmpty {
                 out.append(LogText.seg(" (\(c.details))", .secondaryLabelColor))
             }

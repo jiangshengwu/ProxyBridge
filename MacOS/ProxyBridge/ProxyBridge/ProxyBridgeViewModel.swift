@@ -80,6 +80,27 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         let proxy: String
         let status: String
         let details: String
+        let ruleId: String
+        let ruleName: String
+        let matchType: String
+        let matchValue: String
+
+        var ruleMatchLabel: String {
+            let normalizedType = matchType.uppercased()
+            guard normalizedType != "DEFAULT", !ruleId.isEmpty else {
+                return "DEFAULT"
+            }
+
+            let ruleLabel = ruleName.isEmpty ? "R\(ruleId)" : "R\(ruleId) \(ruleName)"
+            switch normalizedType {
+            case "APP", "PROC":
+                return "\(ruleLabel)/\(normalizedType):\(matchValue)"
+            case "ANY":
+                return "\(ruleLabel)/ANY"
+            default:
+                return ruleLabel
+            }
+        }
     }
     
     struct ActivityLog: Identifiable {
@@ -785,7 +806,11 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             item.process,
             item.destination,
             item.port,
-            item.proxy
+            item.proxy,
+            item.ruleId,
+            item.ruleName,
+            item.matchType,
+            item.matchValue
         ].joined(separator: "\u{1F}")
     }
 
@@ -821,7 +846,11 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             port: port,
             proxy: proxy,
             status: status,
-            details: details
+            details: details,
+            ruleId: log["ruleId"] ?? "",
+            ruleName: log["ruleName"] ?? "",
+            matchType: log["matchType"] ?? "DEFAULT",
+            matchValue: log["matchValue"] ?? ""
         )
     }
 
