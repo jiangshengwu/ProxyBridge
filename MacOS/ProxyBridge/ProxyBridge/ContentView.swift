@@ -43,6 +43,7 @@ struct ContentView: View {
     @State private var activitySearchText = ""
     @State private var selectedRoutingFilter: RoutingFilter? = nil
     @State private var selectedProtocolFilter: ProtocolFilter? = nil
+    @State private var selectedActivitySource: ProxyBridgeViewModel.ActivitySource? = nil
     
     var body: some View {
         VStack(spacing: 0) {
@@ -184,7 +185,9 @@ struct ContentView: View {
             } else {
                 ActivityLogsView(
                     logs: filteredActivityLogs,
+                    allLogs: viewModel.activityLogs,
                     searchText: $activitySearchText,
+                    selectedSource: $selectedActivitySource,
                     onClear: viewModel.clearActivityLogs
                 )
             }
@@ -228,13 +231,16 @@ struct ContentView: View {
 
     private var filteredActivityLogs: [ProxyBridgeViewModel.ActivityLog] {
         let q = activitySearchText
-        if q.isEmpty {
-            return viewModel.activityLogs
-        }
         return viewModel.activityLogs.filter {
-            $0.timestamp.localizedCaseInsensitiveContains(q) ||
-            $0.level.localizedCaseInsensitiveContains(q) ||
-            $0.message.localizedCaseInsensitiveContains(q)
+            if let source = selectedActivitySource, $0.source != source {
+                return false
+            }
+
+            if q.isEmpty { return true }
+            return $0.timestamp.localizedCaseInsensitiveContains(q) ||
+                $0.source.rawValue.localizedCaseInsensitiveContains(q) ||
+                $0.level.localizedCaseInsensitiveContains(q) ||
+                $0.message.localizedCaseInsensitiveContains(q)
         }
     }
 }
@@ -496,7 +502,9 @@ struct ConnectionsView: View {
 
 struct ActivityLogsView: View {
     let logs: [ProxyBridgeViewModel.ActivityLog]
+    let allLogs: [ProxyBridgeViewModel.ActivityLog]
     @Binding var searchText: String
+    @Binding var selectedSource: ProxyBridgeViewModel.ActivitySource?
     let onClear: () -> Void
     
     var body: some View {
@@ -507,14 +515,68 @@ struct ActivityLogsView: View {
         }
     }
 
+    private var allCount: Int { allLogs.count }
+    private var appCount: Int { allLogs.filter { $0.source == .app }.count }
+    private var extensionCount: Int { allLogs.filter { $0.source == .systemExtension }.count }
+
     private var searchBar: some View {
-        HStack {
-            Image(systemName: "magnifyingglass")
-                .foregroundColor(.gray)
-            TextField("Search system activity...", text: $searchText)
-                .textFieldStyle(.plain)
-            Spacer()
-            Button("Clear", action: onClear)
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.gray)
+                TextField("Search system activity...", text: $searchText)
+                    .textFieldStyle(.plain)
+
+                if !searchText.isEmpty {
+                    Button(action: { searchText = "" }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.gray)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Spacer()
+                Button("Clear", action: onClear)
+            }
+
+            HStack(spacing: 6) {
+                Text("Filter:")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                FilterChipButton(
+                    title: "ALL",
+                    isSelected: selectedSource == nil,
+                    count: allCount,
+                    badgeColor: nil
+                ) {
+                    selectedSource = nil
+                }
+
+                Divider()
+                    .frame(height: 14)
+                    .padding(.horizontal, 2)
+
+                FilterChipButton(
+                    title: "APP",
+                    isSelected: selectedSource == .app,
+                    count: appCount,
+                    badgeColor: .green
+                ) {
+                    selectedSource = selectedSource == .app ? nil : .app
+                }
+
+                FilterChipButton(
+                    title: "EXTENSION",
+                    isSelected: selectedSource == .systemExtension,
+                    count: extensionCount,
+                    badgeColor: .purple
+                ) {
+                    selectedSource = selectedSource == .systemExtension ? nil : .systemExtension
+                }
+
+                Spacer()
+            }
         }
         .padding()
         .background(Color(NSColor.controlBackgroundColor))
@@ -524,6 +586,8 @@ struct ActivityLogsView: View {
         let out = NSMutableAttributedString()
         for log in logs {
             out.append(LogText.seg("[\(log.timestamp)] ", .secondaryLabelColor))
+            let sourceColor: NSColor = log.source == .app ? .systemGreen : .systemPurple
+            out.append(LogText.seg("[\(log.source.rawValue)] ", sourceColor))
             let levelColor: NSColor
             switch log.level.uppercased() {
             case "ERROR":

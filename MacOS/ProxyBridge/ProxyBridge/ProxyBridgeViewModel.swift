@@ -85,8 +85,14 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     struct ActivityLog: Identifiable {
         let id: Int
         let timestamp: String
+        let source: ActivitySource
         let level: String
         let message: String
+    }
+
+    enum ActivitySource: String {
+        case app = "APP"
+        case systemExtension = "EXTENSION"
     }
     
     // when every window is hidden or minimized there's no point polling logs
@@ -758,7 +764,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     private func appendActivity(_ items: [ActivityLog]) {
         guard !items.isEmpty else { return }
         for item in items {
-            let signature = "\(item.level)\u{1F}\(item.message)"
+            let signature = "\(item.source.rawValue)\u{1F}\(item.level)\u{1F}\(item.message)"
             let receivedAt = Date()
             if lastActivitySignature == signature,
                receivedAt.timeIntervalSince(lastActivityReceivedAt) < 0.75 {
@@ -830,6 +836,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         return ActivityLog(
             id: activityIdCounter,
             timestamp: normalizedActivityTimestamp(timestamp),
+            source: .systemExtension,
             level: level,
             message: message
         )
@@ -889,6 +896,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         let log = ActivityLog(
             id: activityIdCounter,
             timestamp: getCurrentTimestamp(),
+            source: .app,
             level: level,
             message: message
         )
