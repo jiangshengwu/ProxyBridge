@@ -310,37 +310,50 @@ struct ProxyRulesView: View {
     }
 
     // persist the current list and push it to the extension if the tunnel is up
-    private func saveAndSync() {
+    private func saveAndSync(activityMessage: String) {
         let dicts = rules.map { $0.toDict() }
         let d = UserDefaults.standard
         d.set(dicts, forKey: "proxyRules")
         let active = viewModel.activeProfile
         d.set(dicts, forKey: "profile.\(active).proxyRules")
-        LocalIPCClient.shared.syncRules(dicts) { _, _ in }
-        if let session = viewModel.tunnelSession {
-            RuleManager.resyncRules(session: session) { _, _ in }
+        viewModel.recordActivity(activityMessage)
+        LocalIPCClient.shared.syncRules(dicts) { [viewModel] success, _ in
+            guard !success, let session = viewModel.tunnelSession else { return }
+            RuleManager.resyncRules(session: session) { success, _ in
+                if !success {
+                    DispatchQueue.main.async {
+                        viewModel.recordActivity("Failed to sync rules with extension", level: "ERROR")
+                    }
+                }
+            }
         }
     }
 
     func commitRule(_ rule: ProxyRule) {
         if let index = rules.firstIndex(where: { $0.localId == rule.localId }) {
             rules[index] = rule
+            saveAndSync(activityMessage: "Rule updated: \(ruleActivityName(rule))")
         } else {
             rules.append(rule)
+            saveAndSync(activityMessage: "Rule added: \(ruleActivityName(rule))")
         }
-        saveAndSync()
     }
 
     private func deleteRule(_ rule: ProxyRule) {
         rules.removeAll { $0.localId == rule.localId }
         selectedRuleIds.remove(rule.localId)
-        saveAndSync()
+        saveAndSync(activityMessage: "Rule deleted: \(ruleActivityName(rule))")
     }
 
     private func toggleRule(_ rule: ProxyRule, enabled: Bool) {
         guard let index = rules.firstIndex(where: { $0.localId == rule.localId }) else { return }
         rules[index].enabled = enabled
-        saveAndSync()
+        saveAndSync(activityMessage: "Rule \(enabled ? "enabled" : "disabled"): \(ruleActivityName(rule))")
+    }
+
+    private func ruleActivityName(_ rule: ProxyRule) -> String {
+        let name = rule.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "unnamed rule" : name
     }
     
     private func getSelectedRules() -> [ProxyRule] {
@@ -392,7 +405,7 @@ struct ProxyRulesView: View {
             let importedRules = try JSONDecoder().decode([ProxyRule].self, from: data)
             // decode drops localId so each imported rule already has a fresh one
             rules.append(contentsOf: importedRules)
-            saveAndSync()
+            saveAndSync(activityMessage: "Rules imported: \(url.lastPathComponent) (count: \(importedRules.count))")
         } catch {
             print("Failed to import rules: \(error)")
         }

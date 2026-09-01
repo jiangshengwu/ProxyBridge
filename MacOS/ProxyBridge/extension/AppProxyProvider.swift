@@ -369,8 +369,17 @@ class AppProxyProvider: NETransparentProxyProvider {
     }
     private var storedProxyConfigs: [String: StoredProxyConfig] = [:]
     private let proxyLock = NSLock()
+
+    private enum ActivityLogScope {
+        case system
+        case connection
+    }
     
-    private func log(_ message: String, level: String = "INFO") {
+    private func log(_ message: String, level: String = "INFO", scope: ActivityLogScope = .connection) {
+        // Per-flow events already have a structured representation in the
+        // Connections tab. Activity is reserved for control-plane events so the
+        // two tabs do not mirror the same traffic in different string formats.
+        guard case .system = scope else { return }
         appendLog(.activity(timestamp: dateFormatter.string(from: Date()), level: level, message: message))
     }
 
@@ -402,7 +411,7 @@ class AppProxyProvider: NETransparentProxyProvider {
             )
         }
         proxyLock.unlock()
-        log("Proxy configs loaded: \(storedProxyConfigs.count) config(s)")
+        log("Proxy configs loaded: \(storedProxyConfigs.count) config(s)", scope: .system)
     }
 
     private func applyRules(_ rawRules: [[String: Any]]) {
@@ -423,7 +432,7 @@ class AppProxyProvider: NETransparentProxyProvider {
         }
         let count = rules.count
         rulesLock.unlock()
-        log("Loaded \(count) rule(s) into extension")
+        log("Loaded \(count) rule(s) into extension", scope: .system)
     }
 
     private func drainLogs() -> [[String: String]] {
@@ -483,7 +492,7 @@ class AppProxyProvider: NETransparentProxyProvider {
         if let ipcAuthToken = initialDict["ipcAuthToken"] as? String {
             LocalIPCServer.shared.start(authorizationToken: ipcAuthToken)
         } else {
-            log("Local IPC disabled: missing startup authorization token", level: "ERROR")
+            log("Local IPC disabled: missing startup authorization token", level: "ERROR", scope: .system)
         }
 
         let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
@@ -790,6 +799,7 @@ class AppProxyProvider: NETransparentProxyProvider {
                     guard let self = self else { return }
                     if let error = error {
                         self.log("[\(displayName)] [UDP] [SOCKS5 \(socks5Config.host):\(socks5Config.port)] Flow open failed: \(error.localizedDescription)", level: "ERROR")
+                        self.sendLogToApp(protocol: "UDP", process: displayName, destination: "*", port: "*", proxy: "SOCKS5 \(socks5Config.host):\(socks5Config.port)", status: "FAILED", details: "Flow open failed: \(error.localizedDescription)")
                         return
                     }
                     self.proxyUDPFlowViaSOCKS5(flow, displayName: displayName, socksHost: socks5Config.host, socksPort: socks5Config.port, username: socks5Config.username, password: socks5Config.password)
@@ -1045,6 +1055,7 @@ class AppProxyProvider: NETransparentProxyProvider {
 
             if let error = error {
                 self.log("[\(association.displayName)] [UDP] [SOCKS5 \(association.socksHost):\(association.socksPort)] UDP client read error: \(error.localizedDescription)", level: "ERROR")
+                self.sendLogToApp(protocol: "UDP", process: association.displayName, destination: "*", port: "*", proxy: "SOCKS5 \(association.socksHost):\(association.socksPort)", status: "FAILED", details: "Client read error: \(error.localizedDescription)")
                 self.teardownUDP(clientFlow)
                 return
             }
@@ -1077,6 +1088,8 @@ class AppProxyProvider: NETransparentProxyProvider {
 
                 if let encapsulated = self.encapsulateSOCKS5UDP(datagram: datagrams[i], destHost: destHost, destPort: destPort) {
                     toSend.append(encapsulated)
+                } else {
+                    self.sendLogToApp(protocol: "UDP", process: association.displayName, destination: destHost, port: nwHost.port, proxy: "SOCKS5 \(association.socksHost):\(association.socksPort)", status: "FAILED", details: "Could not encode datagram destination")
                 }
             }
 
@@ -1084,6 +1097,7 @@ class AppProxyProvider: NETransparentProxyProvider {
                 association.udpSession.writeMultipleDatagrams(toSend) { [weak self] error in
                     if let error = error {
                         self?.log("[\(association.displayName)] [UDP] [SOCKS5 \(association.socksHost):\(association.socksPort)] UDP write to relay error: \(error.localizedDescription)", level: "ERROR")
+                        self?.sendLogToApp(protocol: "UDP", process: association.displayName, destination: "*", port: "*", proxy: "SOCKS5 \(association.socksHost):\(association.socksPort)", status: "FAILED", details: "Relay write error: \(error.localizedDescription)")
                     }
                 }
             }
@@ -1101,6 +1115,7 @@ class AppProxyProvider: NETransparentProxyProvider {
                 // stop reading the relay but don't close the app's flow, let it
                 // time out on its own instead of getting a hard EPIPE
                 self.log("[\(association.displayName)] [UDP] [SOCKS5 \(association.socksHost):\(association.socksPort)] UDP relay read error: \(error.localizedDescription)", level: "ERROR")
+                self.sendLogToApp(protocol: "UDP", process: association.displayName, destination: "*", port: "*", proxy: "SOCKS5 \(association.socksHost):\(association.socksPort)", status: "FAILED", details: "Relay read error: \(error.localizedDescription)")
                 return
             }
 
@@ -1122,6 +1137,7 @@ class AppProxyProvider: NETransparentProxyProvider {
                 clientFlow.writeDatagrams(payloads, sentBy: endpoints) { [weak self] error in
                     if let error = error {
                         self?.log("[\(association.displayName)] [UDP] [SOCKS5 \(association.socksHost):\(association.socksPort)] UDP client response write error: \(error.localizedDescription)", level: "ERROR")
+                        self?.sendLogToApp(protocol: "UDP", process: association.displayName, destination: "*", port: "*", proxy: "SOCKS5 \(association.socksHost):\(association.socksPort)", status: "FAILED", details: "Client response write error: \(error.localizedDescription)")
                     }
                 }
             }
@@ -1513,6 +1529,7 @@ class AppProxyProvider: NETransparentProxyProvider {
                 let code = (error as NSError).code
                 if code != 57 && code != 54 && code != 89 {
                     self.log("[\(displayName)] [\(destination):\(port)] [\(proxyLabel)] Client read error: \(error.localizedDescription)", level: "ERROR")
+                    self.sendLogToApp(protocol: "TCP", process: displayName, destination: destination, port: String(port), proxy: proxyLabel, status: "FAILED", details: "Client read error: \(error.localizedDescription)")
                 }
                 clientFlow.closeReadWithError(nil)
                 clientFlow.closeWriteWithError(nil)
@@ -1529,6 +1546,7 @@ class AppProxyProvider: NETransparentProxyProvider {
                 guard let self = self else { return }
                 if let error = error {
                     self.log("[\(displayName)] [\(destination):\(port)] [\(proxyLabel)] Proxy write error: \(error.localizedDescription)", level: "ERROR")
+                    self.sendLogToApp(protocol: "TCP", process: displayName, destination: destination, port: String(port), proxy: proxyLabel, status: "FAILED", details: "Proxy write error: \(error.localizedDescription)")
                     clientFlow.closeReadWithError(error)
                     clientFlow.closeWriteWithError(error)
                     proxyConnection.cancel()
@@ -1546,6 +1564,7 @@ class AppProxyProvider: NETransparentProxyProvider {
                 let code = (error as NSError).code
                 if code != 57 && code != 54 && code != 89 {
                     self.log("[\(displayName)] [\(destination):\(port)] [\(proxyLabel)] Proxy read error: \(error.localizedDescription)", level: "ERROR")
+                    self.sendLogToApp(protocol: "TCP", process: displayName, destination: destination, port: String(port), proxy: proxyLabel, status: "FAILED", details: "Proxy read error: \(error.localizedDescription)")
                 }
                 clientFlow.closeReadWithError(nil)
                 clientFlow.closeWriteWithError(nil)
@@ -1564,6 +1583,7 @@ class AppProxyProvider: NETransparentProxyProvider {
                 guard let self = self else { return }
                 if let error = error {
                     self.log("[\(displayName)] [\(destination):\(port)] [\(proxyLabel)] Client write error: \(error.localizedDescription)", level: "ERROR")
+                    self.sendLogToApp(protocol: "TCP", process: displayName, destination: destination, port: String(port), proxy: proxyLabel, status: "FAILED", details: "Client write error: \(error.localizedDescription)")
                     clientFlow.closeReadWithError(error)
                     clientFlow.closeWriteWithError(error)
                     proxyConnection.cancel()

@@ -29,6 +29,8 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     }()
     private var connectionIdCounter: Int = 0
     private var activityIdCounter: Int = 0
+    private var lastActivitySignature: String?
+    private var lastActivityReceivedAt = Date.distantPast
     
     struct ProxyConfig: Identifiable, Codable {
         let id: String
@@ -115,7 +117,9 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
 
     // single place that decides whether the poll timer should be running
     private func updatePollingState() {
-        if isTrafficLoggingEnabled && tunnelSession != nil && isWindowVisible {
+        // System Activity remains useful when per-connection traffic logging is
+        // disabled, so keep draining the extension's control-plane events.
+        if tunnelSession != nil && isWindowVisible {
             startLogPollingTimer()
         } else {
             stopLogPollingTimer()
@@ -138,11 +142,12 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         UserDefaults.standard.set(isTrafficLoggingEnabled, forKey: "trafficLoggingEnabled")
         sendTrafficLoggingToExtension(isTrafficLoggingEnabled)
         updatePollingState()
+        addLog("INFO", "Connection logging \(isTrafficLoggingEnabled ? "enabled" : "disabled")")
     }
     
     private func sendTrafficLoggingToExtension(_ enabled: Bool) {
-        LocalIPCClient.shared.setTrafficLogging(enabled)
-        if let session = tunnelSession {
+        LocalIPCClient.shared.setTrafficLogging(enabled) { [weak self] success in
+            guard !success, let session = self?.tunnelSession else { return }
             let message: [String: Any] = [
                 "action": "setTrafficLogging",
                 "enabled": enabled
@@ -258,13 +263,14 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         updatePollingState()
     }
 
-    func switchProfile(to name: String) {
+    func switchProfile(to name: String, activityMessage: String? = nil) {
         guard name != activeProfile, profiles.contains(name) else { return }
         flushWorkingSet(to: activeProfile)
         loadWorkingSet(from: name)
         activeProfile = name
         UserDefaults.standard.set(name, forKey: "activeProfile")
         applyActiveProfile()
+        addLog("INFO", activityMessage ?? "Profile switched: \(name)")
     }
 
     func createProfile(_ rawName: String) {
@@ -275,7 +281,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         UserDefaults.standard.set([[String: Any]](), forKey: profileRulesKey(name))
         profiles.append(name)
         UserDefaults.standard.set(profiles, forKey: "profiles")
-        switchProfile(to: name)
+        switchProfile(to: name, activityMessage: "Profile created and activated: \(name)")
     }
 
     func renameProfile(_ old: String, to rawNew: String) {
@@ -300,6 +306,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             activeProfile = new
             d.set(new, forKey: "activeProfile")
         }
+        addLog("INFO", "Profile renamed: \(old) → \(new)")
     }
 
     func deleteProfile(_ name: String) {
@@ -316,6 +323,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         d.removeObject(forKey: profileStartupKey(name))
         profiles.removeAll { $0 == name }
         d.set(profiles, forKey: "profiles")
+        addLog("INFO", "Profile deleted: \(name)")
     }
 
     // build a portable .pbprofile json for a profile
@@ -361,7 +369,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
 
         profiles.append(name)
         d.set(profiles, forKey: "profiles")
-        switchProfile(to: name)
+        switchProfile(to: name, activityMessage: "Profile imported and activated: \(name)")
         return true
     }
 
@@ -383,6 +391,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     func addProxyConfig(_ config: ProxyConfig) {
         proxyConfigs.append(config)
         saveProxyConfigs()
+        addLog("INFO", "Proxy config added: \(config.displayName)")
         if let session = tunnelSession {
             sendProxyConfigsToExtension(session: session)
         }
@@ -392,6 +401,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         if let index = proxyConfigs.firstIndex(where: { $0.id == config.id }) {
             proxyConfigs[index] = config
             saveProxyConfigs()
+            addLog("INFO", "Proxy config updated: \(config.displayName)")
             if let session = tunnelSession {
                 sendProxyConfigsToExtension(session: session)
             }
@@ -405,24 +415,28 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
 
     func removeProxyConfig(_ config: ProxyConfig) {
         // reset any rules pointing to this config to DIRECT so they don't silently go direct anyway
+        var resetRuleCount = 0
         if var saved = UserDefaults.standard.array(forKey: "proxyRules") as? [[String: Any]] {
             var changed = false
             for i in saved.indices where (saved[i]["action"] as? String) == config.id {
                 saved[i]["action"] = "DIRECT"
                 changed = true
+                resetRuleCount += 1
             }
             if changed {
                 let d = UserDefaults.standard
                 d.set(saved, forKey: "proxyRules")
                 d.set(saved, forKey: profileRulesKey(activeProfile))
-                LocalIPCClient.shared.syncRules(saved) { _, _ in }
-                if let session = tunnelSession {
+                LocalIPCClient.shared.syncRules(saved) { [weak self] success, _ in
+                    guard !success, let session = self?.tunnelSession else { return }
                     RuleManager.resyncRules(session: session) { _, _ in }
                 }
             }
         }
         proxyConfigs.removeAll { $0.id == config.id }
         saveProxyConfigs()
+        let resetSuffix = resetRuleCount > 0 ? "; \(resetRuleCount) dependent rule(s) changed to DIRECT" : ""
+        addLog("INFO", "Proxy config deleted: \(config.displayName)\(resetSuffix)")
         if let session = tunnelSession {
             sendProxyConfigsToExtension(session: session)
         }
@@ -536,8 +550,11 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             let ipcAuthToken = LocalIPCClient.shared.rotateAuthorizationToken()
             var isConfigured = false
             var hasConnected = false
+            var lastReportedStatus: NEVPNStatus?
             let handleStatusChange: (NEVPNStatus) -> Void = { [weak self] status in
                 guard let self = self else { return }
+                guard status != lastReportedStatus else { return }
+                lastReportedStatus = status
                 switch status {
                 case .connected:
                     // startTunnel() commonly reports an initial .disconnected
@@ -707,7 +724,31 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
 
     private func appendConnections(_ items: [ConnectionLog]) {
         guard !items.isEmpty else { return }
-        connections.append(contentsOf: items)
+
+        // A poll can contain many indistinguishable UDP flows and repeated
+        // callbacks for the same TCP phase. Keep one exact event per batch and
+        // fold CONNECTING into its terminal state when both arrive together.
+        var uniqueEvents = Set<String>()
+        var batch: [ConnectionLog] = []
+        batch.reserveCapacity(items.count)
+
+        for item in items {
+            let eventKey = connectionEventKey(item)
+            guard uniqueEvents.insert(eventKey).inserted else { continue }
+
+            let status = item.status.uppercased()
+            if status != "CONNECTING",
+               let index = batch.lastIndex(where: {
+                   connectionIdentityKey($0) == connectionIdentityKey(item) &&
+                   $0.status.uppercased() == "CONNECTING"
+               }) {
+                batch[index] = item
+            } else {
+                batch.append(item)
+            }
+        }
+
+        connections.append(contentsOf: batch)
         if connections.count > maxLogEntries {
             connections.removeFirst(connections.count - trimToEntries)
         }
@@ -715,10 +756,38 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
 
     private func appendActivity(_ items: [ActivityLog]) {
         guard !items.isEmpty else { return }
-        activityLogs.append(contentsOf: items)
+        for item in items {
+            let signature = "\(item.level)\u{1F}\(item.message)"
+            let receivedAt = Date()
+            if lastActivitySignature == signature,
+               receivedAt.timeIntervalSince(lastActivityReceivedAt) < 0.75 {
+                continue
+            }
+            activityLogs.append(item)
+            lastActivitySignature = signature
+            lastActivityReceivedAt = receivedAt
+        }
         if activityLogs.count > maxLogEntries {
             activityLogs.removeFirst(activityLogs.count - trimToEntries)
         }
+    }
+
+    private func connectionIdentityKey(_ item: ConnectionLog) -> String {
+        [
+            item.connectionProtocol,
+            item.process,
+            item.destination,
+            item.port,
+            item.proxy
+        ].joined(separator: "\u{1F}")
+    }
+
+    private func connectionEventKey(_ item: ConnectionLog) -> String {
+        [
+            connectionIdentityKey(item),
+            item.status,
+            item.details
+        ].joined(separator: "\u{1F}")
     }
 
     private func makeConnectionLog(_ log: [String: String]) -> ConnectionLog? {
@@ -779,17 +848,16 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         }
         
         LocalIPCClient.shared.syncConfigs(configsArray) { [weak self] success in
-            if success {
-                DispatchQueue.main.async {
-                    self?.addLog("INFO", "Proxy configs sent: \(self?.proxyConfigs.count ?? 0) config(s)")
-                }
-            }
-        }
-        
-        if let session = session {
+            guard !success, let session = session ?? self?.tunnelSession else { return }
             let message: [String: Any] = ["action": "setProxyConfigs", "configs": configsArray]
             if let data = try? JSONSerialization.data(withJSONObject: message) {
-                try? session.sendProviderMessage(data) { _ in }
+                do {
+                    try session.sendProviderMessage(data) { _ in }
+                } catch {
+                    DispatchQueue.main.async {
+                        self?.addLog("ERROR", "Failed to sync proxy configs: \(error.localizedDescription)")
+                    }
+                }
             }
         }
     }
@@ -800,6 +868,12 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     
     func clearActivityLogs() {
         activityLogs.removeAll()
+        lastActivitySignature = nil
+        lastActivityReceivedAt = .distantPast
+    }
+
+    func recordActivity(_ message: String, level: String = "INFO") {
+        addLog(level, message)
     }
     
     private func addLog(_ level: String, _ message: String) {

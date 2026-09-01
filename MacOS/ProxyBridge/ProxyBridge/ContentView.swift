@@ -161,7 +161,7 @@ struct ContentView: View {
             TabButton(title: "Connections", isSelected: selectedTab == 0) {
                 selectedTab = 0
             }
-            TabButton(title: "Activity Logs", isSelected: selectedTab == 1) {
+            TabButton(title: "System Activity", isSelected: selectedTab == 1) {
                 selectedTab = 1
             }
             Spacer()
@@ -511,7 +511,7 @@ struct ActivityLogsView: View {
         HStack {
             Image(systemName: "magnifyingglass")
                 .foregroundColor(.gray)
-            TextField("Search logs...", text: $searchText)
+            TextField("Search system activity...", text: $searchText)
                 .textFieldStyle(.plain)
             Spacer()
             Button("Clear", action: onClear)
