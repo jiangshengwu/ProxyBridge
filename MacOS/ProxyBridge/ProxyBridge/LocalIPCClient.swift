@@ -4,6 +4,8 @@ final class LocalIPCClient {
     static let shared = LocalIPCClient()
     private let baseURL = URL(string: "http://127.0.0.1:58223")!
     private let session: URLSession
+    private let tokenLock = NSLock()
+    private var authorizationToken: String?
     
     private init() {
         let config = URLSessionConfiguration.ephemeral
@@ -11,11 +13,31 @@ final class LocalIPCClient {
         config.timeoutIntervalForResource = 2.0
         self.session = URLSession(configuration: config)
     }
+
+    func setAuthorizationToken(_ token: String?) {
+        tokenLock.lock()
+        authorizationToken = token?.trimmingCharacters(in: .whitespacesAndNewlines)
+        tokenLock.unlock()
+    }
+
+    private func authorize(_ request: inout URLRequest) -> Bool {
+        tokenLock.lock()
+        let token = authorizationToken
+        tokenLock.unlock()
+
+        guard let token = token, !token.isEmpty else { return false }
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        return true
+    }
     
     func fetchLogs(completion: @escaping ([[String: String]]) -> Void) {
         let url = baseURL.appendingPathComponent("logs")
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
+        guard authorize(&request) else {
+            completion([])
+            return
+        }
         
         session.dataTask(with: request) { data, _, _ in
             guard let data = data,
@@ -33,6 +55,10 @@ final class LocalIPCClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: rules)
+        guard authorize(&request) else {
+            completion?(false, 0)
+            return
+        }
         
         session.dataTask(with: request) { data, _, error in
             guard error == nil,
@@ -53,6 +79,10 @@ final class LocalIPCClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: configs)
+        guard authorize(&request) else {
+            completion?(false)
+            return
+        }
         
         session.dataTask(with: request) { data, _, error in
             guard error == nil,
@@ -72,6 +102,10 @@ final class LocalIPCClient {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: ["enabled": enabled])
+        guard authorize(&request) else {
+            completion?(false)
+            return
+        }
         
         session.dataTask(with: request) { data, _, error in
             guard error == nil,
