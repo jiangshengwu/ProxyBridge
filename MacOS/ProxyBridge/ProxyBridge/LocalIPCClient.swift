@@ -63,6 +63,26 @@ final class LocalIPCClient {
             completion(logs)
         }.resume()
     }
+
+    func checkHealth(completion: @escaping ([String: Any]?) -> Void) {
+        let url = baseURL.appendingPathComponent("health")
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        guard authorize(&request) else {
+            completion(nil)
+            return
+        }
+
+        session.dataTask(with: request) { data, _, error in
+            guard error == nil,
+                  let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                completion(nil)
+                return
+            }
+            completion(json)
+        }.resume()
+    }
     
     func syncRules(_ rules: [[String: Any]], completion: ((Bool, Int) -> Void)? = nil) {
         let url = baseURL.appendingPathComponent("rules")

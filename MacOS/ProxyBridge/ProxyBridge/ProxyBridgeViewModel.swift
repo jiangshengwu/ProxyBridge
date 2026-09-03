@@ -135,12 +135,30 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
             name: NSApplication.didChangeOcclusionStateNotification,
             object: nil
         )
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(systemDidWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
         installAndStartProxy()
     }
 
     @objc private func occlusionChanged() {
         isWindowVisible = NSApp.occlusionState.contains(.visible)
         updatePollingState()
+    }
+
+    @objc private func systemDidWake() {
+        addLog("INFO", "System woke from sleep. Verifying proxy tunnel and extension state...")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self = self, self.isProxyActive else { return }
+            if let session = self.tunnelSession, session.status == .connected {
+                self.performHealthCheck()
+            } else {
+                self.startProxy()
+            }
+        }
     }
 
     // single place that decides whether the poll timer should be running
@@ -542,6 +560,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     private func onTunnelConnected(session: NETunnelProviderSession) {
         self.tunnelSession = session
         self.isProxyActive = true
+        self.startHealthCheckTimer()
         
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
             guard let self = self else { return }
@@ -662,6 +681,7 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     }
     
     func stopProxy() {
+        stopHealthCheckTimer()
         guard let session = tunnelSession else {
             isProxyActive = false
             logTimer?.invalidate()
@@ -716,6 +736,61 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         updatePollingState()
     }
     
+    private var healthCheckTimer: Timer?
+    private let healthCheckInterval: TimeInterval = 15.0
+
+    private func startHealthCheckTimer() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.healthCheckTimer == nil else { return }
+            self.healthCheckTimer = Timer.scheduledTimer(
+                withTimeInterval: self.healthCheckInterval,
+                repeats: true
+            ) { [weak self] _ in
+                self?.performHealthCheck()
+            }
+        }
+    }
+
+    private func stopHealthCheckTimer() {
+        DispatchQueue.main.async { [weak self] in
+            self?.healthCheckTimer?.invalidate()
+            self?.healthCheckTimer = nil
+        }
+    }
+
+    private func performHealthCheck() {
+        guard isProxyActive, let session = tunnelSession, session.status == .connected else { return }
+
+        LocalIPCClient.shared.checkHealth { [weak self] health in
+            guard let self = self, self.isProxyActive else { return }
+
+            if let health = health {
+                let extRulesCount = health["rulesCount"] as? Int ?? 0
+                let extConfigsCount = health["configsCount"] as? Int ?? 0
+                let localRules = (UserDefaults.standard.array(forKey: "proxyRules") as? [[String: Any]]) ?? []
+
+                if (extConfigsCount == 0 && !self.proxyConfigs.isEmpty) ||
+                   (extRulesCount == 0 && !localRules.isEmpty) {
+                    DispatchQueue.main.async {
+                        self.addLog("WARN", "Health check detected extension configuration was lost. Auto-restoring...")
+                        self.sendProxyConfigsToExtension(session: session)
+                        RuleManager.loadRulesFromUserDefaults(session: session) { [weak self] success, count in
+                            if success {
+                                self?.addLog("INFO", "Self-healed: restored \(count) rule(s) to extension")
+                            }
+                        }
+                    }
+                }
+            } else {
+                // IPC failed: could be token mismatch or extension was silently restarted by macOS
+                DispatchQueue.main.async {
+                    self.sendProxyConfigsToExtension(session: session)
+                    RuleManager.loadRulesFromUserDefaults(session: session) { _, _ in }
+                }
+            }
+        }
+    }
+
     private func startLogPollingTimer() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }

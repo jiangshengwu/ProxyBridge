@@ -28,6 +28,7 @@ final class LocalIPCServer {
     }
 
     var onGetLogs: (() -> [[String: String]])?
+    var onGetHealth: (() -> [String: Any])?
     var onSetRules: (([[String: Any]]) -> Int)?
     var onSetConfigs: (([[String: Any]]) -> Void)?
     var onSetTrafficLogging: ((Bool) -> Void)?
@@ -216,6 +217,10 @@ final class LocalIPCServer {
         case ("GET", "/logs"):
             let logs = onGetLogs?() ?? []
             return jsonResponse(statusCode: 200, reason: "OK", object: logs)
+
+        case ("GET", "/health"):
+            let health = onGetHealth?() ?? ["status": "ok"]
+            return jsonResponse(statusCode: 200, reason: "OK", object: health)
 
         case ("POST", "/rules"):
             if let data = bodyData,

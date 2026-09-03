@@ -550,6 +550,24 @@ class AppProxyProvider: NETransparentProxyProvider {
         LocalIPCServer.shared.onGetLogs = { [weak self] in
             return self?.drainLogs() ?? []
         }
+        LocalIPCServer.shared.onGetHealth = { [weak self] in
+            guard let self = self else { return [:] }
+            self.rulesLock.lock()
+            let ruleCount = self.rules.count
+            self.rulesLock.unlock()
+            self.proxyLock.lock()
+            let configCount = self.storedProxyConfigs.count
+            self.proxyLock.unlock()
+            self.udpLock.lock()
+            let udpCount = self.udpAssociations.count
+            self.udpLock.unlock()
+            return [
+                "status": "ok",
+                "rulesCount": ruleCount,
+                "configsCount": configCount,
+                "activeUDPCount": udpCount
+            ]
+        }
         LocalIPCServer.shared.onSetRules = { [weak self] rawRules in
             self?.applyRules(rawRules)
             return rawRules.count
@@ -572,6 +590,8 @@ class AppProxyProvider: NETransparentProxyProvider {
             log("Local IPC disabled: missing startup authorization token", level: "ERROR", scope: .system)
         }
 
+        startUDPSweeper()
+
         let settings = NETransparentProxyNetworkSettings(tunnelRemoteAddress: "127.0.0.1")
         
         let allTrafficRule = NENetworkRule(
@@ -591,6 +611,7 @@ class AppProxyProvider: NETransparentProxyProvider {
     }
     
     override func stopProxy(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        stopUDPSweeper()
         LocalIPCServer.shared.stop()
         udpLock.lock()
         let all = Array(udpAssociations.values)
@@ -615,6 +636,7 @@ class AppProxyProvider: NETransparentProxyProvider {
         let ruleContext: RuleLogContext
         var loggedDestinations = Set<String>()  // dedupe connection logs, bounded
         var isTornDown = false
+        var lastActivity: Date = Date()
 
         init(clientFlow: NEAppProxyUDPFlow, controlConnection: NWTCPConnection, udpSession: NWUDPSession, displayName: String, socksHost: String, socksPort: Int, ruleContext: RuleLogContext) {
             self.clientFlow = clientFlow
@@ -628,6 +650,38 @@ class AppProxyProvider: NETransparentProxyProvider {
     }
     private var udpAssociations: [NEAppProxyUDPFlow: UDPAssociation] = [:]
     private let udpLock = NSLock()
+    private var udpSweeperTimer: DispatchSourceTimer?
+    private let sweeperQueue = DispatchQueue(label: "com.interceptsuite.ProxyBridge.sweeper")
+
+    private func startUDPSweeper() {
+        stopUDPSweeper()
+        let timer = DispatchSource.makeTimerSource(queue: sweeperQueue)
+        timer.schedule(deadline: .now() + 30.0, repeating: 30.0)
+        timer.setEventHandler { [weak self] in
+            self?.sweepStaleUDPAssociations()
+        }
+        udpSweeperTimer = timer
+        timer.resume()
+    }
+
+    private func stopUDPSweeper() {
+        udpSweeperTimer?.cancel()
+        udpSweeperTimer = nil
+    }
+
+    private func sweepStaleUDPAssociations() {
+        let now = Date()
+        udpLock.lock()
+        // Evict any UDP association with no traffic for > 60 seconds
+        let staleFlows = udpAssociations.compactMap { (flow, assoc) -> NEAppProxyUDPFlow? in
+            return now.timeIntervalSince(assoc.lastActivity) > 60.0 ? flow : nil
+        }
+        udpLock.unlock()
+
+        for flow in staleFlows {
+            teardownUDP(flow)
+        }
+    }
     
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
         guard let message = try? JSONSerialization.jsonObject(with: messageData) as? [String: Any],
@@ -731,10 +785,24 @@ class AppProxyProvider: NETransparentProxyProvider {
     }
     
     override func sleep(completionHandler: @escaping () -> Void) {
+        log("System going to sleep, cleaning up active UDP flows", scope: .system)
+        udpLock.lock()
+        let allFlows = Array(udpAssociations.keys)
+        udpLock.unlock()
+        for flow in allFlows {
+            teardownUDP(flow)
+        }
         completionHandler()
     }
     
     override func wake() {
+        log("System woke from sleep, resetting stale associations and verifying listener", scope: .system)
+        udpLock.lock()
+        let allFlows = Array(udpAssociations.keys)
+        udpLock.unlock()
+        for flow in allFlows {
+            teardownUDP(flow)
+        }
     }
     
     override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
@@ -1233,6 +1301,8 @@ class AppProxyProvider: NETransparentProxyProvider {
                 return
             }
 
+            association.lastActivity = Date()
+
             var toSend: [Data] = []
             toSend.reserveCapacity(datagrams.count)
 
@@ -1285,6 +1355,8 @@ class AppProxyProvider: NETransparentProxyProvider {
             }
 
             guard let datagrams = datagrams, !datagrams.isEmpty else { return }
+
+            association.lastActivity = Date()
 
             var payloads: [Data] = []
             var endpoints: [NWEndpoint] = []
@@ -1670,6 +1742,44 @@ class AppProxyProvider: NETransparentProxyProvider {
         }
     }
     
+    private final class TCPRelayContext {
+        let clientFlow: NEAppProxyTCPFlow
+        let proxyConnection: NWTCPConnection
+        private var isClosed = false
+        private let lock = NSLock()
+        private var timeoutItem: DispatchWorkItem?
+
+        init(clientFlow: NEAppProxyTCPFlow, proxyConnection: NWTCPConnection) {
+            self.clientFlow = clientFlow
+            self.proxyConnection = proxyConnection
+        }
+
+        func close() {
+            lock.lock()
+            defer { lock.unlock() }
+            guard !isClosed else { return }
+            isClosed = true
+            timeoutItem?.cancel()
+            timeoutItem = nil
+            clientFlow.closeReadWithError(nil)
+            clientFlow.closeWriteWithError(nil)
+            proxyConnection.cancel()
+        }
+
+        func onClientEOF() {
+            clientFlow.closeReadWithError(nil)
+            lock.lock()
+            guard !isClosed else { lock.unlock(); return }
+            // If proxy doesn't complete the response within 45s, cleanly close both sides
+            let item = DispatchWorkItem { [weak self] in
+                self?.close()
+            }
+            timeoutItem = item
+            lock.unlock()
+            DispatchQueue.global().asyncAfter(deadline: .now() + 45.0, execute: item)
+        }
+    }
+
     private func relayData(clientFlow: NEAppProxyTCPFlow, proxyConnection: NWTCPConnection, displayName: String, destination: String, port: UInt16, proxyLabel: String, ruleContext: RuleLogContext) {
         clientFlow.open(withLocalEndpoint: nil) { [weak self] error in
             guard let self = self else { return }
@@ -1682,13 +1792,14 @@ class AppProxyProvider: NETransparentProxyProvider {
                 return
             }
             
-            self.relayClientToProxy(clientFlow: clientFlow, proxyConnection: proxyConnection, displayName: displayName, destination: destination, port: port, proxyLabel: proxyLabel, ruleContext: ruleContext)
-            self.relayProxyToClient(clientFlow: clientFlow, proxyConnection: proxyConnection, displayName: displayName, destination: destination, port: port, proxyLabel: proxyLabel, ruleContext: ruleContext)
+            let context = TCPRelayContext(clientFlow: clientFlow, proxyConnection: proxyConnection)
+            self.relayClientToProxy(context: context, displayName: displayName, destination: destination, port: port, proxyLabel: proxyLabel, ruleContext: ruleContext)
+            self.relayProxyToClient(context: context, displayName: displayName, destination: destination, port: port, proxyLabel: proxyLabel, ruleContext: ruleContext)
         }
     }
     
-    private func relayClientToProxy(clientFlow: NEAppProxyTCPFlow, proxyConnection: NWTCPConnection, displayName: String, destination: String, port: UInt16, proxyLabel: String, ruleContext: RuleLogContext) {
-        clientFlow.readData { [weak self] data, error in
+    private func relayClientToProxy(context: TCPRelayContext, displayName: String, destination: String, port: UInt16, proxyLabel: String, ruleContext: RuleLogContext) {
+        context.clientFlow.readData { [weak self] data, error in
             guard let self = self else { return }
             if let error = error {
                 let code = (error as NSError).code
@@ -1696,34 +1807,31 @@ class AppProxyProvider: NETransparentProxyProvider {
                     self.log("[\(displayName)] [\(destination):\(port)] [\(proxyLabel)] Client read error: \(error.localizedDescription)", level: "ERROR")
                     self.sendLogToApp(protocol: "TCP", process: displayName, destination: destination, port: String(port), proxy: proxyLabel, status: self.connectionStatus(for: error), details: "Client read error: \(error.localizedDescription)", ruleContext: ruleContext)
                 }
-                clientFlow.closeReadWithError(nil)
-                clientFlow.closeWriteWithError(nil)
-                proxyConnection.cancel()
+                context.close()
                 return
             }
             
             guard let data = data, !data.isEmpty else {
-                // Client reached EOF (finished sending request), allow proxy to client to continue or close
+                // Client reached EOF (finished sending request), allow proxy to finish response up to 45s
+                context.onClientEOF()
                 return
             }
             
-            proxyConnection.write(data) { [weak self] error in
+            context.proxyConnection.write(data) { [weak self] error in
                 guard let self = self else { return }
                 if let error = error {
                     self.log("[\(displayName)] [\(destination):\(port)] [\(proxyLabel)] Proxy write error: \(error.localizedDescription)", level: "ERROR")
                     self.sendLogToApp(protocol: "TCP", process: displayName, destination: destination, port: String(port), proxy: proxyLabel, status: self.connectionStatus(for: error), details: "Proxy write error: \(error.localizedDescription)", ruleContext: ruleContext)
-                    clientFlow.closeReadWithError(error)
-                    clientFlow.closeWriteWithError(error)
-                    proxyConnection.cancel()
+                    context.close()
                 } else {
-                    self.relayClientToProxy(clientFlow: clientFlow, proxyConnection: proxyConnection, displayName: displayName, destination: destination, port: port, proxyLabel: proxyLabel, ruleContext: ruleContext)
+                    self.relayClientToProxy(context: context, displayName: displayName, destination: destination, port: port, proxyLabel: proxyLabel, ruleContext: ruleContext)
                 }
             }
         }
     }
     
-    private func relayProxyToClient(clientFlow: NEAppProxyTCPFlow, proxyConnection: NWTCPConnection, displayName: String, destination: String, port: UInt16, proxyLabel: String, ruleContext: RuleLogContext) {
-        proxyConnection.readMinimumLength(1, maximumLength: 65536) { [weak self] data, error in
+    private func relayProxyToClient(context: TCPRelayContext, displayName: String, destination: String, port: UInt16, proxyLabel: String, ruleContext: RuleLogContext) {
+        context.proxyConnection.readMinimumLength(1, maximumLength: 65536) { [weak self] data, error in
             guard let self = self else { return }
             if let error = error {
                 let code = (error as NSError).code
@@ -1731,20 +1839,16 @@ class AppProxyProvider: NETransparentProxyProvider {
                     self.log("[\(displayName)] [\(destination):\(port)] [\(proxyLabel)] Proxy read error: \(error.localizedDescription)", level: "ERROR")
                     self.sendLogToApp(protocol: "TCP", process: displayName, destination: destination, port: String(port), proxy: proxyLabel, status: self.connectionStatus(for: error), details: "Proxy read error: \(error.localizedDescription)", ruleContext: ruleContext)
                 }
-                clientFlow.closeReadWithError(nil)
-                clientFlow.closeWriteWithError(nil)
-                proxyConnection.cancel()
+                context.close()
                 return
             }
             
             guard let data = data, !data.isEmpty else {
-                clientFlow.closeReadWithError(nil)
-                clientFlow.closeWriteWithError(nil)
-                proxyConnection.cancel()
+                context.close()
                 return
             }
             
-            clientFlow.write(data) { [weak self] error in
+            context.clientFlow.write(data) { [weak self] error in
                 guard let self = self else { return }
                 if let error = error {
                     let status = self.connectionStatus(for: error)
@@ -1752,11 +1856,9 @@ class AppProxyProvider: NETransparentProxyProvider {
                     let summary = status == "CANCELLED" ? "Client flow cancelled" : (status == "CLOSED" ? "Client flow closed" : "Client write error")
                     self.log("[\(displayName)] [\(destination):\(port)] [\(proxyLabel)] \(summary): \(error.localizedDescription)", level: isExpectedClose ? "INFO" : "ERROR")
                     self.sendLogToApp(protocol: "TCP", process: displayName, destination: destination, port: String(port), proxy: proxyLabel, status: status, details: "\(summary): \(error.localizedDescription)", ruleContext: ruleContext)
-                    clientFlow.closeReadWithError(error)
-                    clientFlow.closeWriteWithError(error)
-                    proxyConnection.cancel()
+                    context.close()
                 } else {
-                    self.relayProxyToClient(clientFlow: clientFlow, proxyConnection: proxyConnection, displayName: displayName, destination: destination, port: port, proxyLabel: proxyLabel, ruleContext: ruleContext)
+                    self.relayProxyToClient(context: context, displayName: displayName, destination: destination, port: port, proxyLabel: proxyLabel, ruleContext: ruleContext)
                 }
             }
         }
