@@ -24,7 +24,8 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
     private let extensionIdentifier = "com.interceptsuite.ProxyBridge.extension"
     private let timestampFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.dateFormat = "HH:mm:ss"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd HH:mm:ss"
         return f
     }()
     private let extensionTimestampFormatter = ISO8601DateFormatter()
