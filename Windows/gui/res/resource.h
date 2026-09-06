@@ -124,6 +124,7 @@
 #define IDC_RE_L_PROTO             434
 #define IDC_RE_L_ACTION            435
 #define IDC_RE_BROWSE              436
+#define IDC_RE_FOLDER              444
 #define IDC_RE_EX_APPS             437
 #define IDC_RE_EX_HOSTS            438
 #define IDC_RE_EX_PORTS            439

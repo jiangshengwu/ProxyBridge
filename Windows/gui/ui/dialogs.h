@@ -6,9 +6,8 @@
 #ifndef PB_UI_DIALOGS_H
 #define PB_UI_DIALOGS_H
 
-// Subclass a ListView to (a) dark-theme its header via custom draw - it stays light
-// otherwise - and (b) the header's empty right-hand area gets filled dark too.
-static LRESULT CALLBACK ListDarkSubProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR ref)
+// Subclass a ListView to give its header and unused area the shared panel palette.
+static LRESULT CALLBACK ListThemeSubProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT_PTR id, DWORD_PTR ref)
 {
     (void)id; (void)ref;
     if (m == WM_NOTIFY)
@@ -38,7 +37,7 @@ static LRESULT CALLBACK ListDarkSubProc(HWND h, UINT m, WPARAM w, LPARAM l, UINT
             }
             case CDDS_POSTPAINT:
             {
-                // Paint the empty area to the right of the last column dark; otherwise
+                // Paint the empty area to the right of the last column consistently; otherwise
                 // it shows the default white header background (visible at the edge and
                 // whenever the columns don't span the full width, e.g. after a drag).
                 HWND hdr = nh->hwndFrom;
@@ -82,16 +81,16 @@ static void FillColumns(HWND lv, int count)
     }
 }
 
-// Dark-theme a report ListView: full-row select + double buffer (+ any extra ex-styles),
-// dark colours, dark-drawn header. Columns/FillColumns are added by the caller.
-static void DarkListView(HWND lv, DWORD extraExStyle)
+// Theme a report ListView: full-row select + double buffer (+ any extra ex-styles),
+// light colours and matching header. Columns/FillColumns are added by the caller.
+static void ThemeListView(HWND lv, DWORD extraExStyle)
 {
     ListView_SetExtendedListViewStyle(lv, LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER | extraExStyle);
-    SetWindowTheme(lv, L"DarkMode_Explorer", NULL);
+    SetWindowTheme(lv, L"Explorer", NULL);
     ListView_SetBkColor(lv, C_PANEL);
     ListView_SetTextBkColor(lv, C_PANEL);
     ListView_SetTextColor(lv, C_TEXT);
-    SetWindowSubclass(lv, ListDarkSubProc, 3, 0);
+    SetWindowSubclass(lv, ListThemeSubProc, 3, 0);
 }
 
 // Proxy Servers
@@ -100,7 +99,7 @@ static void DarkListView(HWND lv, DWORD extraExStyle)
 
 static void InitServerList(HWND lv)
 {
-    DarkListView(lv, 0);
+    ThemeListView(lv, 0);
     struct { int s; int w; } cols[] = { {S_COL_NAME, 130}, {S_COL_ADDR, 160}, {S_COL_PORTS, 60}, {S_COL_TYPE, 80} };
     LVCOLUMNW c; c.mask = LVCF_TEXT | LVCF_WIDTH;
     for (int i = 0; i < 4; i++) { c.pszText = (LPWSTR)T(cols[i].s); c.cx = cols[i].w; ListView_InsertColumn(lv, i, &c); }
@@ -158,10 +157,10 @@ INT_PTR CALLBACK ServerEditDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         CheckDlgButton(dlg, IDC_SE_AUTH, hasAuth ? BST_CHECKED : BST_UNCHECKED);
         EnableWindow(GetDlgItem(dlg, IDC_SE_USER), hasAuth);
         EnableWindow(GetDlgItem(dlg, IDC_SE_PASS), hasAuth);
-        InitDarkMode(dlg);
+        InitLightTheme(dlg);
         return TRUE;
     }
-    PB_DARK_CTLCOLORS;
+    PB_LIGHT_CTLCOLORS;
     case WM_COMMAND:
         switch (LOWORD(wp))
         {
@@ -259,10 +258,10 @@ INT_PTR CALLBACK CheckerDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         SetDlgItemInt(dlg, IDC_CK_PORT, 80, FALSE);
         SendDlgItemMessageW(dlg, IDC_CK_LOG, WM_SETFONT,
                             (WPARAM)(g_hMono ? g_hMono : (HFONT)GetStockObject(ANSI_FIXED_FONT)), TRUE);
-        InitDarkMode(dlg);
+        InitLightTheme(dlg);
         CheckerStart(dlg);
         return TRUE;
-    PB_DARK_CTLCOLORS;
+    PB_LIGHT_CTLCOLORS;
     case WM_APP_TESTLINE:
     {
         wchar_t* w = (wchar_t*)lp;
@@ -299,14 +298,14 @@ INT_PTR CALLBACK ServersDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         SetDlgItemTextW(dlg, IDC_SV_REMOVE, T(S_BTN_REMOVE));
         SetDlgItemTextW(dlg, IDC_SV_CHECK,  T(S_BTN_CHECK));
         SetDlgItemTextW(dlg, IDCANCEL,      T(S_BTN_CLOSE));
-        InitDarkMode(dlg);
+        InitLightTheme(dlg);
         InitServerList(GetDlgItem(dlg, IDC_SV_LIST));
         RefreshServerList(GetDlgItem(dlg, IDC_SV_LIST));
         return TRUE;
     case WM_SIZE:
         FillColumns(GetDlgItem(dlg, IDC_SV_LIST), 4);
         return FALSE;
-    PB_DARK_CTLCOLORS;
+    PB_LIGHT_CTLCOLORS;
     case WM_NOTIFY:
     {
         LPNMHDR nh = (LPNMHDR)lp;
@@ -386,14 +385,14 @@ static BOOL g_rulesRefreshing = FALSE;   // guards the checkbox-change notificat
 static void InitRulesList(HWND lv)
 {
     // Checkboxes give the enable/disable toggle in the first column.
-    DarkListView(lv, LVS_EX_CHECKBOXES);
+    ThemeListView(lv, LVS_EX_CHECKBOXES);
     struct { int s; int w; } cols[] = {
         {S_COL_ON, 36}, {S_COL_NAME, 130}, {S_COL_APPS, 160}, {S_COL_HOSTS, 70}, {S_COL_PORTS, 55},
         {S_COL_DOMAINS, 90}, {S_COL_PROTO, 55}, {S_COL_ACTION, 65}, {S_COL_CFG, 190}
     };
     LVCOLUMNW c; c.mask = LVCF_TEXT | LVCF_WIDTH;
     for (int i = 0; i < 9; i++) { c.pszText = (LPWSTR)T(cols[i].s); c.cx = cols[i].w; ListView_InsertColumn(lv, i, &c); }
-    SetWindowSubclass(lv, ListDarkSubProc, 3, 0);
+    SetWindowSubclass(lv, ListThemeSubProc, 3, 0);
     FillColumns(lv, 9);
 }
 static void RefreshRulesList(HWND lv)
@@ -504,7 +503,7 @@ INT_PTR CALLBACK RuleEditDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         }
         SendMessageW(ac, CB_SETCURSEL, target, 0);
         CheckDlgButton(dlg, IDC_RE_ENABLED, r->enabled ? BST_CHECKED : BST_UNCHECKED);
-        InitDarkMode(dlg);
+        InitLightTheme(dlg);
         return TRUE;
     }
     case WM_CTLCOLORDLG:
@@ -526,6 +525,29 @@ INT_PTR CALLBACK RuleEditDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
     case WM_COMMAND:
         switch (LOWORD(wp))
         {
+        case IDC_RE_FOLDER:
+        {
+            BROWSEINFOW bi = {0}; bi.hwndOwner = dlg;
+            bi.lpszTitle = L"Select application folder (includes executables in subfolders)";
+            bi.ulFlags = BIF_RETURNONLYFSDIRS;
+            PIDLIST_ABSOLUTE folder = SHBrowseForFolderW(&bi);
+            if (folder) {
+                wchar_t path[MAX_PATH], out[PB_APPS_MAX];
+                if (SHGetPathFromIDListW(folder, path)) {
+                    GetDlgItemTextW(dlg, IDC_RE_APPS, out, PB_APPS_MAX);
+                    if (!wcscmp(out, L"*")) out[0] = 0;
+                    size_t n = wcslen(path);
+                    const wchar_t *suffix = n && path[n-1] == L'\\' ? L"*" : L"\\*";
+                    if (wcslen(out) + n + wcslen(suffix) + 3 < PB_APPS_MAX) {
+                        if (out[0]) wcscat_s(out, PB_APPS_MAX, L"; ");
+                        wcscat_s(out, PB_APPS_MAX, path); wcscat_s(out, PB_APPS_MAX, suffix);
+                        SetDlgItemTextW(dlg, IDC_RE_APPS, out);
+                    }
+                }
+                CoTaskMemFree(folder);
+            }
+            return TRUE;
+        }
         case IDC_RE_BROWSE:
         {
             // Pick one or more .exe files and append each file name to the list.
@@ -624,14 +646,14 @@ INT_PTR CALLBACK RulesDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         SetDlgItemTextW(dlg, IDC_RL_DOWN,   T(S_BTN_DOWN));
         SetDlgItemTextW(dlg, IDC_RL_HINT,   T(S_RULES_HINT));
         SetDlgItemTextW(dlg, IDCANCEL,      T(S_BTN_CLOSE));
-        InitDarkMode(dlg);
+        InitLightTheme(dlg);
         InitRulesList(GetDlgItem(dlg, IDC_RL_LIST));
         RefreshRulesList(GetDlgItem(dlg, IDC_RL_LIST));
         return TRUE;
     case WM_SIZE:
         FillColumns(GetDlgItem(dlg, IDC_RL_LIST), 9);
         return FALSE;
-    PB_DARK_CTLCOLORS;
+    PB_LIGHT_CTLCOLORS;
     case WM_NOTIFY:
     {
         LPNMHDR nh = (LPNMHDR)lp;
@@ -759,10 +781,10 @@ INT_PTR CALLBACK FilterEditDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         int ai = 0; if (!_wcsicmp(f->action, L"Direct")) ai = 1; else if (!_wcsicmp(f->action, L"Proxy")) ai = 2; else if (!_wcsicmp(f->action, L"Blocked")) ai = 3;
         SendMessageW(pr, CB_SETCURSEL, pi, 0);
         SendMessageW(ac, CB_SETCURSEL, ai, 0);
-        InitDarkMode(dlg);
+        InitLightTheme(dlg);
         return TRUE;
     }
-    PB_DARK_CTLCOLORS;
+    PB_LIGHT_CTLCOLORS;
     case WM_COMMAND:
         switch (LOWORD(wp))
         {
@@ -790,13 +812,13 @@ INT_PTR CALLBACK FilterEditDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
 
 static void InitFilterList(HWND lv)
 {
-    DarkListView(lv, 0);
+    ThemeListView(lv, 0);
     struct { int s; int w; } cols[] = {
         {S_COL_MODE, 70}, {S_COL_PROC, 150}, {S_COL_IP, 110}, {S_COL_PORTS, 70}, {S_COL_PROTO, 70}, {S_COL_ACTION, 90}
     };
     LVCOLUMNW c; c.mask = LVCF_TEXT | LVCF_WIDTH;
     for (int i = 0; i < 6; i++) { c.pszText = (LPWSTR)T(cols[i].s); c.cx = cols[i].w; ListView_InsertColumn(lv, i, &c); }
-    SetWindowSubclass(lv, ListDarkSubProc, 3, 0);
+    SetWindowSubclass(lv, ListThemeSubProc, 3, 0);
     FillColumns(lv, 6);
 }
 static void RefreshFilterList(HWND lv)
@@ -826,11 +848,11 @@ INT_PTR CALLBACK FiltersDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         SetDlgItemTextW(dlg, IDC_FL_EDIT,   T(S_BTN_EDITDOTS));
         SetDlgItemTextW(dlg, IDC_FL_REMOVE, T(S_BTN_REMOVE));
         SetDlgItemTextW(dlg, IDCANCEL,      T(S_BTN_CLOSE));
-        InitDarkMode(dlg);
+        InitLightTheme(dlg);
         InitFilterList(GetDlgItem(dlg, IDC_FL_LIST));
         RefreshFilterList(GetDlgItem(dlg, IDC_FL_LIST));
         return TRUE;
-    PB_DARK_CTLCOLORS;
+    PB_LIGHT_CTLCOLORS;
     case WM_NOTIFY:
     {
         LPNMHDR nh = (LPNMHDR)lp;
@@ -887,10 +909,10 @@ INT_PTR CALLBACK NameDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         SetDlgItemTextW(dlg, IDC_NAME_PROMPT, T(S_L_PROFNAME));
         SetDlgItemTextW(dlg, IDOK, T(S_BTN_OK));
         SetDlgItemTextW(dlg, IDCANCEL, T(S_BTN_CANCEL));
-        InitDarkMode(dlg);
+        InitLightTheme(dlg);
         SetFocus(GetDlgItem(dlg, IDC_NAME_EDIT));
         return FALSE;
-    PB_DARK_CTLCOLORS;
+    PB_LIGHT_CTLCOLORS;
     case WM_COMMAND:
         if (LOWORD(wp) == IDOK) { GetDlgItemTextW(dlg, IDC_NAME_EDIT, g_nameResult, PB_NAME_MAX); EndDialog(dlg, 1); return TRUE; }
         if (LOWORD(wp) == IDCANCEL) { g_nameResult[0] = 0; EndDialog(dlg, 0); return TRUE; }
@@ -930,7 +952,7 @@ INT_PTR CALLBACK AboutDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
                                       OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                       DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
         SendDlgItemMessageW(dlg, IDC_AB_TITLE, WM_SETFONT, (WPARAM)s_titleFont, TRUE);
-        InitDarkMode(dlg);
+        InitLightTheme(dlg);
         AboutCenterLink(dlg, IDC_AB_WEB);
         AboutCenterLink(dlg, IDC_AB_GITHUB);
         return TRUE;

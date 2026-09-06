@@ -4,13 +4,16 @@
 
 void log_message(const char *msg, ...)
 {
-    if (g_log_callback == NULL) return;
+    LogCallback callback = g_log_callback;
+    if (callback == NULL) return;
+    int saved_error = WSAGetLastError();
     char buffer[LOG_BUFFER_SIZE];
     va_list args;
     va_start(args, msg);
     vsnprintf(buffer, sizeof(buffer), msg, args);
     va_end(args);
-    g_log_callback(buffer);
+    callback(buffer);
+    WSASetLastError(saved_error);
 }
 
 // Extract filename from full path  C:\path\chrome.exe  >> chrome.exe
@@ -100,40 +103,29 @@ void configure_tcp_socket(SOCKET sock, int bufsize, DWORD timeout)
 int connect_with_timeout(SOCKET s, const struct sockaddr *addr, int addrlen, int timeout_ms)
 {
     u_long nonblock = 1;
-    ioctlsocket(s, FIONBIO, &nonblock);
-
-    int result = 0;
-    if (connect(s, addr, addrlen) == SOCKET_ERROR)
-    {
-        if (WSAGetLastError() != WSAEWOULDBLOCK)
-        {
-            result = SOCKET_ERROR;
-        }
-        else
-        {
+    if (ioctlsocket(s, FIONBIO, &nonblock) == SOCKET_ERROR) return SOCKET_ERROR;
+    int error = 0;
+    if (connect(s, addr, addrlen) == SOCKET_ERROR) {
+        error = WSAGetLastError();
+        if (error == WSAEWOULDBLOCK) {
             fd_set wfds, efds;
             FD_ZERO(&wfds); FD_SET(s, &wfds);
             FD_ZERO(&efds); FD_SET(s, &efds);
-            struct timeval tv = { timeout_ms / 1000, (timeout_ms % 1000) * 1000 };
-            int sel = select(0, NULL, &wfds, &efds, &tv);
-            if (sel <= 0 || FD_ISSET(s, &efds))
-            {
-                result = SOCKET_ERROR;   // timed out or connect failed
-            }
-            else
-            {
-                int so_err = 0;
-                int errlen = sizeof(so_err);
-                getsockopt(s, SOL_SOCKET, SO_ERROR, (char*)&so_err, &errlen);
-                if (so_err != 0)
-                    result = SOCKET_ERROR;
+            struct timeval tv = {timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+            int selected = select(0, NULL, &wfds, &efds, &tv);
+            if (selected == 0) error = WSAETIMEDOUT;
+            else if (selected == SOCKET_ERROR) error = WSAGetLastError();
+            else {
+                int size = sizeof(error);
+                if (getsockopt(s, SOL_SOCKET, SO_ERROR, (char*)&error, &size) == SOCKET_ERROR)
+                    error = WSAGetLastError();
             }
         }
     }
-
     u_long blocking = 0;
-    ioctlsocket(s, FIONBIO, &blocking);   // restore blocking for the handshake reads
-    return result;
+    if (ioctlsocket(s, FIONBIO, &blocking) == SOCKET_ERROR && !error) error = WSAGetLastError();
+    WSASetLastError(error);
+    return error ? SOCKET_ERROR : 0;
 }
 
 void configure_udp_socket(SOCKET sock, int bufsize, DWORD timeout)
@@ -173,7 +165,8 @@ int recv_n(SOCKET s, char *buf, int n)
     int got = 0;
     while (got < n) {
         int r = recv(s, buf + got, n - got, 0);
-        if (r <= 0) return SOCKET_ERROR;  // 0 = peer closed, <0 = error/timeout
+        if (r == 0) { WSASetLastError(WSAENOTCONN); return SOCKET_ERROR; }
+        if (r < 0) return SOCKET_ERROR;
         got += r;
     }
     return n;
@@ -251,3 +244,43 @@ void base64_encode(const char* input, char* output, size_t output_size)
     output[output_len] = '\0';
 }
 
+
+PB_THREAD_LOCAL PB_LOG_CONTEXT pb_log_context;
+
+const char* connection_error_status(int error)
+{
+    switch (error) {
+    case WSAENOTCONN: return "CLOSED";
+    case PB_ERROR_REJECTED: return "REJECTED";
+    case WSAETIMEDOUT: return "TIMEOUT";
+    case WSAEACCES: return "AUTH_FAILED";
+    case WSAECONNREFUSED: return "REFUSED";
+    case WSAENETUNREACH: case WSAEHOSTUNREACH: return "UNREACHABLE";
+    case WSAECONNRESET: case WSAECONNABORTED: return "RESET";
+    default: return "FAILED";
+    }
+}
+
+void emit_connection_status(const PB_LOG_CONTEXT *ctx, const char *ip, UINT16 port,
+                            const char *info, const char *status, const char *details)
+{
+    ConnectionCallback callback = g_connection_callback;
+    if (!callback || !g_traffic_logging_enabled) return;
+    char text[2048];
+    snprintf(text, sizeof(text), "%s | status=%s | rule=R%u %s | match=%s | %s",
+        info, status, ctx->rule_id, ctx->rule_name,
+        ctx->rule_id ? ctx->match : "DEFAULT", details ? details : "");
+    for (char *p = text; *p; p++) if (*p == '\r' || *p == '\n') *p = ' ';
+    callback(ctx->process, ctx->pid, ip, port, text);
+}
+
+void emit_connection_log(const char *process, DWORD pid, const char *ip, UINT16 port, const char *info)
+{
+    PB_LOG_CONTEXT ctx = pb_log_context;
+    ctx.pid = pid;
+    strncpy_s(ctx.process, sizeof(ctx.process), process, _TRUNCATE);
+    const char *status = !_strnicmp(info, "Direct", 6) ? "DIRECT" :
+                         !_strnicmp(info, "Block", 5) ? "BLOCKED" : "CONNECTING";
+    emit_connection_status(&ctx, ip, port, info, status,
+        !strcmp(status, "DIRECT") ? "Direct routing decision (not a connectivity test)" : "Routing decision");
+}

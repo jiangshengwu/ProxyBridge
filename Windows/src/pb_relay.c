@@ -173,6 +173,7 @@ DWORD WINAPI udp_relay_server(LPVOID arg)
 
                     if (cfg == NULL || cfg->type != PROXY_TYPE_SOCKS5)
                     {
+                        udp_log_status(from_port, FALSE, 2, "SOCKS5 configuration unavailable");
                         log_message("[UDP RELAY] No SOCKS5 config for port %d", from_port);
                         continue;
                     }
@@ -184,6 +185,7 @@ DWORD WINAPI udp_relay_server(LPVOID arg)
                     {
                         if (!establish_udp_associate_for_config(cfg))
                         {
+                            udp_log_status(from_port, FALSE, 2, "UDP association handshake failed");
                             log_message("[UDP RELAY] UDP ASSOCIATE unavailable for %s:%d - dropping packet", cfg->host, cfg->port);
                             continue;
                         }
@@ -205,8 +207,10 @@ DWORD WINAPI udp_relay_server(LPVOID arg)
                     int sent = sendto(cfg->udp_send_sock, (char*)send_buf, 10 + recv_len, 0,
                           (struct sockaddr *)&cfg->udp_relay_addr, sizeof(cfg->udp_relay_addr));
 
+                    int send_error = WSAGetLastError();
+                    udp_log_status(from_port, FALSE, sent == SOCKET_ERROR ? 2 : 1, sent == SOCKET_ERROR ? "Sending datagram to proxy failed" : "Datagram sent to proxy (destination delivery not confirmed)");
                     if (sent == SOCKET_ERROR) {
-                        int err = WSAGetLastError();
+                        int err = send_error;
                         log_message("[UDP RELAY ERROR] sendto proxy %s:%d failed: %d - reconnecting and retrying", cfg->host, cfg->port, err);
                         if (cfg->udp_tcp_ctrl != INVALID_SOCKET) { closesocket(cfg->udp_tcp_ctrl); cfg->udp_tcp_ctrl = INVALID_SOCKET; }
                         if (cfg->udp_send_sock != INVALID_SOCKET) { closesocket(cfg->udp_send_sock); cfg->udp_send_sock = INVALID_SOCKET; }
@@ -362,7 +366,8 @@ DWORD WINAPI udp_relay_server(LPVOID arg)
                     PROXY_CONFIG *cfg = find_proxy_config(proxy_config_id);
                     if (cfg != NULL && cfg->type == PROXY_TYPE_SOCKS5)
                     {
-                        if (!cfg->udp_connected) establish_udp_associate_for_config(cfg);
+                        if (!cfg->udp_connected && !establish_udp_associate_for_config(cfg))
+                            udp_log_status(from_port, TRUE, 2, "UDP association handshake failed");
                         if (cfg->udp_connected)
                         {
                             send_buf[0] = 0; send_buf[1] = 0; send_buf[2] = 0;
@@ -371,8 +376,9 @@ DWORD WINAPI udp_relay_server(LPVOID arg)
                             send_buf[20] = (dest_port>>8)&0xFF;
                             send_buf[21] = (dest_port>>0)&0xFF;
                             memcpy(&send_buf[22], recv_buf, recv_len);
-                            sendto(cfg->udp_send_sock, (char*)send_buf, 22+recv_len, 0,
+                            int sent6 = sendto(cfg->udp_send_sock, (char*)send_buf, 22+recv_len, 0,
                                    (struct sockaddr*)&cfg->udp_relay_addr, sizeof(cfg->udp_relay_addr));
+                            udp_log_status(from_port, TRUE, sent6 == SOCKET_ERROR ? 2 : 1, sent6 == SOCKET_ERROR ? "Sending datagram to proxy failed" : "Datagram sent to proxy (destination delivery not confirmed)");
                         }
                     }
                 }
@@ -518,6 +524,7 @@ DWORD WINAPI local_proxy_server(LPVOID arg)
                     UINT16 client_port = ntohs(client_addr.sin_port);
                     if (get_connection_full(client_port, FALSE, &conn_config->orig_dest_ip, &conn_config->orig_dest_port, &conn_config->proxy_config_id))
                     {
+                        get_log_context(client_port, FALSE, conn_config->is_ipv6, &conn_config->log_context);
                         HANDLE conn_thread = CreateThread(NULL, 1, connection_handler, (LPVOID)conn_config, 0, NULL);
                         if (conn_thread != NULL) { CloseHandle(conn_thread); }
                         else { closesocket(client_sock); free(conn_config); }
@@ -545,6 +552,7 @@ DWORD WINAPI local_proxy_server(LPVOID arg)
                     UINT16 client_port = ntohs(client_addr6.sin6_port);
                     if (get_connection_full_v6(client_port, FALSE, conn_config->orig_dest_ip6, &conn_config->orig_dest_port, &conn_config->proxy_config_id))
                     {
+                        get_log_context(client_port, FALSE, conn_config->is_ipv6, &conn_config->log_context);
                         HANDLE conn_thread = CreateThread(NULL, 1, connection_handler, (LPVOID)conn_config, 0, NULL);
                         if (conn_thread != NULL) { CloseHandle(conn_thread); }
                         else { closesocket(client_sock6); free(conn_config); }
@@ -577,12 +585,18 @@ DWORD WINAPI connection_handler(LPVOID arg)
     SOCKET socks_sock;
     struct sockaddr_in socks_addr;
 
+    PB_LOG_CONTEXT context = config->log_context;
+    char dest_text[64], info[256];
+    if (is_ipv6) inet_ntop(AF_INET6, dest_ip6, dest_text, sizeof(dest_text));
+    else format_ip_address(dest_ip, dest_text, sizeof(dest_text));
+    snprintf(info, sizeof(info), "Proxy config=%u (TCP)", proxy_config_id);
     free(config);
 
     // Look up the proxy config for this connection
     PROXY_CONFIG *proxy = find_proxy_config(proxy_config_id);
     if (proxy == NULL || proxy->host[0] == '\0' || proxy->port == 0)
     {
+        emit_connection_status(&context, dest_text, dest_port, info, "FAILED", "Proxy configuration unavailable");
         log_message("[RELAY] No proxy config (id=%u) - dropping connection", proxy_config_id);
         closesocket(client_sock);
         return 1;
@@ -592,13 +606,16 @@ DWORD WINAPI connection_handler(LPVOID arg)
     UINT32 proxy_ip = proxy->resolved_ip ? proxy->resolved_ip : resolve_hostname(proxy->host);
     if (proxy_ip == 0)
     {
+        emit_connection_status(&context, dest_text, dest_port, info, "UNREACHABLE", "Proxy DNS resolution failed");
         closesocket(client_sock);
         return 1;
     }
 
+    snprintf(info, sizeof(info), "Proxy %s://%s:%u (TCP)", proxy->type == PROXY_TYPE_HTTP ? "HTTP" : "SOCKS5", proxy->host, proxy->port);
     socks_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (socks_sock == INVALID_SOCKET)
     {
+        emit_connection_status(&context, dest_text, dest_port, info, "FAILED", "Socket creation failed");
         log_message("Socket creation failed (%d)", WSAGetLastError());
         closesocket(client_sock);
         return 0;
@@ -618,14 +635,16 @@ DWORD WINAPI connection_handler(LPVOID arg)
     socks_addr.sin_addr.s_addr = proxy_ip;
     socks_addr.sin_port = htons(proxy->port);
 
-    if (connect(socks_sock, (struct sockaddr *)&socks_addr, sizeof(socks_addr)) == SOCKET_ERROR)
+    if (connect_with_timeout(socks_sock, (struct sockaddr *)&socks_addr, sizeof(socks_addr), 10000) == SOCKET_ERROR)
     {
+        emit_connection_status(&context, dest_text, dest_port, info, connection_error_status(WSAGetLastError()), "Could not connect to proxy");
         log_message("[RELAY] Failed to connect to proxy %s:%d (%d)", proxy->host, proxy->port, WSAGetLastError());
         closesocket(client_sock);
         closesocket(socks_sock);
         return 0;
     }
 
+    WSASetLastError(0);
     if (proxy->type == PROXY_TYPE_SOCKS5)
     {
         int rc;
@@ -648,6 +667,7 @@ DWORD WINAPI connection_handler(LPVOID arg)
         }
         if (rc != 0)
         {
+            emit_connection_status(&context, dest_text, dest_port, info, connection_error_status(WSAGetLastError()), "Proxy handshake failed");
             closesocket(client_sock);
             closesocket(socks_sock);
             return 0;
@@ -660,11 +680,14 @@ DWORD WINAPI connection_handler(LPVOID arg)
             : http_connect(socks_sock, dest_ip, dest_port, proxy);
         if (rc != 0)
         {
+            emit_connection_status(&context, dest_text, dest_port, info, connection_error_status(WSAGetLastError()), "Proxy handshake failed");
             closesocket(client_sock);
             closesocket(socks_sock);
             return 0;
         }
     }
+
+    emit_connection_status(&context, dest_text, dest_port, info, "CONNECTED", "Proxy tunnel established");
 
     // Disable timeout for data transfer phase
     DWORD zero_timeout = 0;
@@ -696,7 +719,8 @@ DWORD WINAPI connection_handler(LPVOID arg)
     transfer_config->to_socket = socks_sock;
 
     // both transfer in current thread
-    transfer_handler((LPVOID)transfer_config);
+    DWORD transfer_result = transfer_handler((LPVOID)transfer_config);
+    emit_connection_status(&context, dest_text, dest_port, info, transfer_result ? connection_error_status((int)transfer_result) : "CLOSED", transfer_result ? "Relay failed" : "Relay ended");
 
     // Sockets already closed in transfer_handler!
 
@@ -718,17 +742,25 @@ DWORD WINAPI one_way_relay(LPVOID arg)
     SOCKET to   = cfg->to;
     free(cfg);
 
+    DWORD outcome = ERROR_NOT_ENOUGH_MEMORY;
     char *buf = (char *)malloc(131072);  // 128 KB per-direction buffer
     if (buf)
     {
-        int len;
-        while ((len = recv(from, buf, 131072, 0)) > 0)
-        {
-            if (send_all(to, buf, len) == SOCKET_ERROR)
-                break;
+        outcome = 0;
+        for (;;) {
+            if (InterlockedCompareExchange(&pair->finished, 0, 0)) break;
+            int len = recv(from, buf, 131072, 0);
+            if (len == SOCKET_ERROR) {
+                int error = WSAGetLastError();
+                if (error == WSAETIMEDOUT) continue; // idle is fine; check cancellation again
+                outcome = error; break;
+            }
+            if (len == 0) break;
+            if (send_all(to, buf, len) == SOCKET_ERROR) { outcome = WSAGetLastError(); break; }
         }
         free(buf);
     }
+    if (InterlockedCompareExchange(&pair->finished, 1, 0) == 0) *pair->outcome = outcome;
 
     // Signal the sibling relay to stop by shutting down both sockets.
     // shutdown() is safe to call from any thread; it just drains/resets the
@@ -758,6 +790,17 @@ DWORD WINAPI transfer_handler(LPVOID arg)
     SOCKET sock_proxy  = config->to_socket;
     free(config);
 
+    // On Windows shutdown alone need not wake a sibling's blocking recv. Poll
+    // cancellation without expiring idle sessions; bound a stalled send separately.
+    DWORD receive_poll = 1000, send_timeout = 45000;
+    if (setsockopt(sock_client, SOL_SOCKET, SO_RCVTIMEO, (char*)&receive_poll, sizeof(receive_poll)) ||
+        setsockopt(sock_proxy, SOL_SOCKET, SO_RCVTIMEO, (char*)&receive_poll, sizeof(receive_poll)) ||
+        setsockopt(sock_client, SOL_SOCKET, SO_SNDTIMEO, (char*)&send_timeout, sizeof(send_timeout)) ||
+        setsockopt(sock_proxy, SOL_SOCKET, SO_SNDTIMEO, (char*)&send_timeout, sizeof(send_timeout))) {
+        DWORD error = WSAGetLastError();
+        closesocket(sock_client); closesocket(sock_proxy); return error;
+    }
+
     RELAY_PAIR *pair = (RELAY_PAIR *)malloc(sizeof(RELAY_PAIR));
     if (!pair)
     {
@@ -767,6 +810,9 @@ DWORD WINAPI transfer_handler(LPVOID arg)
     }
     pair->sock_client = sock_client;
     pair->sock_proxy  = sock_proxy;
+    DWORD outcome = 0;
+    pair->outcome = &outcome;
+    pair->finished = 0;
     pair->refs        = 2;
 
     // Upload: client → proxy  (dedicated thread - may block on slow proxy send)
@@ -806,6 +852,5 @@ DWORD WINAPI transfer_handler(LPVOID arg)
     WaitForSingleObject(upload_thread, INFINITE);
     CloseHandle(upload_thread);
 
-    return 0;
+    return outcome;
 }
-

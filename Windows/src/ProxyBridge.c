@@ -198,7 +198,7 @@ DWORD WINAPI packet_processor(LPVOID arg)
                                 if (action6u==RULE_ACTION_PROXY){PROXY_CONFIG*pc=find_proxy_config(pcid6u);if(pc)snprintf(pinfo,sizeof(pinfo),"Proxy %s://%s:%d (UDP)",pc->type==PROXY_TYPE_HTTP?"HTTP":"SOCKS5",pc->host,pc->port);else snprintf(pinfo,sizeof(pinfo),"Proxy (UDP)");}
                                 else if(action6u==RULE_ACTION_DIRECT) snprintf(pinfo,sizeof(pinfo),"Direct (UDP)");
                                 else snprintf(pinfo,sizeof(pinfo),"Blocked (UDP)");
-                                g_connection_callback(extract_filename(pname),pid6u,dstr,dp,pinfo);
+                                emit_connection_log(extract_filename(pname),pid6u,dstr,dp,pinfo);
                                 if(g_traffic_logging_enabled) add_logged_connection(pid6u,v6key,dp,action6u);
                             }
                         }
@@ -395,7 +395,7 @@ DWORD WINAPI packet_processor(LPVOID arg)
                                 snprintf(proxy_info, sizeof(proxy_info), "Blocked");
 
                             const char *display_name = extract_filename(process_name);
-                            g_connection_callback(display_name, pid6, dest_ip_str, dp, proxy_info);
+                            emit_connection_log(display_name, pid6, dest_ip_str, dp, proxy_info);
 
                             if (g_traffic_logging_enabled)
                                 add_logged_connection(pid6, v6key, dp, action6);
@@ -573,7 +573,7 @@ DWORD WINAPI packet_processor(LPVOID arg)
                                 }
 
                                 const char* display_name = extract_filename(process_name);
-                                g_connection_callback(display_name, pid, dest_ip_str, dest_port, proxy_info);
+                                emit_connection_log(display_name, pid, dest_ip_str, dest_port, proxy_info);
 
                                 if (g_traffic_logging_enabled)
                                 {
@@ -797,7 +797,7 @@ DWORD WINAPI packet_processor(LPVOID arg)
                             }
 
                             const char* display_name = extract_filename(process_name);
-                            g_connection_callback(display_name, pid, dest_ip_str, orig_dest_port, proxy_info);
+                            emit_connection_log(display_name, pid, dest_ip_str, orig_dest_port, proxy_info);
 
                             if (g_traffic_logging_enabled)
                             {
@@ -1229,3 +1229,15 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)
     return TRUE;
 }
 
+
+// Read-only liveness probe. Never restart a partially running engine implicitly.
+PROXYBRIDGE_API BOOL ProxyBridge_IsHealthy(void)
+{
+    if (!running || windivert_handle == INVALID_HANDLE_VALUE) return FALSE;
+    if (!proxy_thread || WaitForSingleObject(proxy_thread, 0) != WAIT_TIMEOUT) return FALSE;
+    if (!udp_relay_thread || WaitForSingleObject(udp_relay_thread, 0) != WAIT_TIMEOUT) return FALSE;
+    if (!cleanup_thread || WaitForSingleObject(cleanup_thread, 0) != WAIT_TIMEOUT) return FALSE;
+    for (int i = 0; i < NUM_PACKET_THREADS; i++)
+        if (!packet_thread[i] || WaitForSingleObject(packet_thread[i], 0) != WAIT_TIMEOUT) return FALSE;
+    return TRUE;
+}

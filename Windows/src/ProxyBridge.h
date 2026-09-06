@@ -49,6 +49,9 @@ PROXYBRIDGE_API int    ProxyBridge_TestProxyConfig(UINT32 config_id, const char*
 typedef void (*ProxyTestLogCallback)(const char* line, void* user);
 PROXYBRIDGE_API int    ProxyBridge_TestProxyConfigEx(UINT32 config_id, const char* target_host, UINT16 target_port, ProxyTestLogCallback callback, void* user);
 
+PROXYBRIDGE_API BOOL ProxyBridge_SetRuleName(UINT32 rule_id, const char* name);
+PROXYBRIDGE_API BOOL ProxyBridge_IsHealthy(void);
+
 // Rule management - proxy_config_id selects which proxy config the rule uses (0 = first available)
 // target_domains: semicolon/comma separated domain patterns ("*", "google.com", "*.google.com"); NULL/"" = no domain restriction.
 // Domain matching relies on DNS snooping of the app's own resolutions; unencrypted DNS only (DoH/DoT bypasses it).

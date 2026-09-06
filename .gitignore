@@ -101,3 +101,9 @@ Linux/cli/proxybridge-cli
 Linux/src/libproxybridge.so
 Linux/src/ProxyBridge.o
 Android/**
+
+# Local Windows compiler/dependency cache and regression test output
+/.work/
+/Windows/tests/build/
+/Windows/output/review-build/
+/Windows/output/light-build/

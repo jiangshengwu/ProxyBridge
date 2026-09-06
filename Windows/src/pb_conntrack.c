@@ -47,12 +47,15 @@ void add_connection(UINT16 src_port, BOOL is_udp, UINT32 src_ip, UINT32 dest_ip,
     // IPv6 flow - may legitimately share a numeric local port at the same time.
     while (existing != NULL) {
         if (existing->src_port == src_port && existing->is_udp == is_udp && !existing->is_ipv6) {
+            if (existing->orig_dest_ip != dest_ip || existing->orig_dest_port != dest_port ||
+                existing->proxy_config_id != proxy_config_id) existing->udp_log_state = 0;
             rev_unlink(existing);   // dest may change (port reuse) - re-key the reverse index
             existing->is_ipv6 = FALSE;
             existing->src_ip = src_ip;
             existing->orig_dest_ip = dest_ip;
             existing->orig_dest_port = dest_port;
             existing->proxy_config_id = proxy_config_id;
+            existing->log_context = pb_log_context;
             existing->is_tracked = TRUE;
             existing->last_activity = GetTickCount64();
             rev_insert(existing);
@@ -74,6 +77,7 @@ void add_connection(UINT16 src_port, BOOL is_udp, UINT32 src_ip, UINT32 dest_ip,
     conn->orig_dest_ip = dest_ip;
     conn->orig_dest_port = dest_port;
     conn->proxy_config_id = proxy_config_id;
+    conn->log_context = pb_log_context;
     conn->is_tracked = TRUE;
     conn->is_ipv6 = FALSE;
     conn->last_activity = GetTickCount64();
@@ -93,12 +97,15 @@ void add_connection_v6(UINT16 src_port, BOOL is_udp, const UINT8 src_ip6[16], co
 
     while (existing != NULL) {
         if (existing->src_port == src_port && existing->is_udp == is_udp && existing->is_ipv6) {
+            if (memcmp(existing->orig_dest_ip6, dest_ip6, 16) || existing->orig_dest_port != dest_port ||
+                existing->proxy_config_id != proxy_config_id) existing->udp_log_state = 0;
             rev_unlink(existing);   // dest may change (port reuse) - re-key the reverse index
             existing->is_ipv6 = TRUE;
             memcpy(existing->src_ip6, src_ip6, 16);
             memcpy(existing->orig_dest_ip6, dest_ip6, 16);
             existing->orig_dest_port = dest_port;
             existing->proxy_config_id = proxy_config_id;
+            existing->log_context = pb_log_context;
             existing->is_tracked = TRUE;
             existing->last_activity = GetTickCount64();
             rev_insert(existing);
@@ -123,6 +130,7 @@ void add_connection_v6(UINT16 src_port, BOOL is_udp, const UINT8 src_ip6[16], co
     memcpy(conn->orig_dest_ip6, dest_ip6, 16);
     conn->orig_dest_port = dest_port;
     conn->proxy_config_id = proxy_config_id;
+    conn->log_context = pb_log_context;
     conn->is_tracked = TRUE;
     conn->last_activity = GetTickCount64();
     conn->next = connection_hash_table[hash];
@@ -453,3 +461,41 @@ void clear_logged_connections(void)
     ReleaseSRWLockExclusive(&lock);
 }
 
+
+BOOL get_log_context(UINT16 port, BOOL udp, BOOL ipv6, PB_LOG_CONTEXT *out)
+{
+    BOOL found = FALSE;
+    ZeroMemory(out, sizeof(*out));
+    AcquireSRWLockShared(&lock);
+    for (CONNECTION_INFO *c = connection_hash_table[port % CONNECTION_HASH_SIZE]; c; c = c->next)
+        if (c->src_port == port && c->is_udp == udp && c->is_ipv6 == ipv6) {
+            *out = c->log_context; found = TRUE; break;
+        }
+    ReleaseSRWLockShared(&lock);
+    return found;
+}
+
+// Emit state transitions only: high-rate UDP traffic must not produce one log per packet.
+void udp_log_status(UINT16 port, BOOL ipv6, int state, const char *details)
+{
+    PB_LOG_CONTEXT ctx;
+    char dest[64]; UINT16 dest_port = 0; UINT32 config_id = 0;
+    BOOL changed = FALSE;
+    AcquireSRWLockExclusive(&lock);
+    for (CONNECTION_INFO *c = connection_hash_table[port % CONNECTION_HASH_SIZE]; c; c = c->next)
+        if (c->src_port == port && c->is_udp && c->is_ipv6 == ipv6) {
+            if (c->udp_log_state != state) {
+                c->udp_log_state = state; ctx = c->log_context;
+                dest_port = c->orig_dest_port; config_id = c->proxy_config_id;
+                if (ipv6) inet_ntop(AF_INET6, c->orig_dest_ip6, dest, sizeof(dest));
+                else format_ip_address(c->orig_dest_ip, dest, sizeof(dest));
+                changed = TRUE;
+            }
+            break;
+        }
+    ReleaseSRWLockExclusive(&lock);
+    if (changed) {
+        char info[96]; snprintf(info, sizeof(info), "Proxy config=%u (UDP)", config_id);
+        emit_connection_status(&ctx, dest, dest_port, info, state == 1 ? "RELAYING" : "FAILED", details);
+    }
+}

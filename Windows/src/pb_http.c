@@ -50,7 +50,9 @@ int http_connect_v6(SOCKET s, const UINT8 dest_ip6[16], UINT16 dest_port, const 
     if (len <= 0 || len >= (int)sizeof(response)) return -1;
     response[len] = '\0';
     char *code_start = strchr(response, ' ');
-    if (!code_start || atoi(code_start + 1) != 200) return -1;
+    if (!code_start) return -1;
+    int code = atoi(code_start + 1);
+    if (code != 200) { WSASetLastError(code == 407 ? WSAEACCES : code == 504 ? WSAETIMEDOUT : PB_ERROR_REJECTED); return -1; }
     return 0;
 }
 
@@ -132,6 +134,7 @@ int http_connect(SOCKET s, UINT32 dest_ip, UINT16 dest_port, const PROXY_CONFIG 
     if (status_code != 200)
     {
         log_message("HTTP: CONNECT failed with status %d", status_code);
+        WSASetLastError(status_code == 407 ? WSAEACCES : status_code == 504 ? WSAETIMEDOUT : PB_ERROR_REJECTED);
         return -1;
     }
 

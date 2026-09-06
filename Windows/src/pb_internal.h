@@ -45,6 +45,7 @@
 
 typedef struct PROCESS_RULE {
     UINT32 rule_id;
+    char name[384];
     char process_name[MAX_PROCESS_NAME];
     char *target_hosts;   // Dynamic: IP filter "*", "192.168.*.*", "10.0.0.1;172.16.0.0"
     char *target_ports;   // Dynamic: Port filter "*", "80", "80;443", "8000-9000"
@@ -92,7 +93,29 @@ typedef struct DNS_CACHE_ENTRY_V6 {
     struct DNS_CACHE_ENTRY_V6 *next;
 } DNS_CACHE_ENTRY_V6;
 
+typedef struct {
+    DWORD pid;
+    UINT32 rule_id;
+    char process[260];
+    char rule_name[384];
+    char match[1024];
+} PB_LOG_CONTEXT;
+#ifdef _MSC_VER
+#define PB_THREAD_LOCAL __declspec(thread)
+#else
+#define PB_THREAD_LOCAL __thread
+#endif
+extern PB_THREAD_LOCAL PB_LOG_CONTEXT pb_log_context;
+void emit_connection_log(const char*, DWORD, const char*, UINT16, const char*);
+void emit_connection_status(const PB_LOG_CONTEXT*, const char*, UINT16, const char*, const char*, const char*);
+BOOL get_log_context(UINT16, BOOL, BOOL, PB_LOG_CONTEXT*);
+const char* connection_error_status(int);
+void udp_log_status(UINT16, BOOL, int, const char*);
+#define PB_ERROR_REJECTED 200001
+
 typedef struct CONNECTION_INFO {
+    PB_LOG_CONTEXT log_context;
+    int udp_log_state;
     UINT16 src_port;
     BOOL   is_udp;             // protocol - a TCP and a UDP flow may share a local port
     UINT32 src_ip;
@@ -111,6 +134,7 @@ typedef struct CONNECTION_INFO {
 } CONNECTION_INFO;
 
 typedef struct {
+    PB_LOG_CONTEXT log_context;
     SOCKET client_socket;
     UINT32 orig_dest_ip;
     UINT16 orig_dest_port;
@@ -129,6 +153,8 @@ typedef struct {
 typedef struct {
     SOCKET sock_client;   // app-side socket
     SOCKET sock_proxy;    // proxy-side socket
+    volatile LONG finished;
+    DWORD *outcome;
     volatile LONG refs;   // ref-count; last thread out closes both sockets
 } RELAY_PAIR;
 
@@ -212,25 +238,25 @@ extern char  *g_pidtbl_buf;
 extern DWORD  g_pidtbl_cap;
 
 // ---- per-source-port decision bitmaps: hot-path inline helpers ----
-static __forceinline BOOL port_is_decided(UINT16 p)
+static __inline BOOL port_is_decided(UINT16 p)
 {
     return (port_decided_bitmap[p >> 5] >> (p & 31)) & 1;
 }
-static __forceinline BOOL port_is_direct(UINT16 p)
+static __inline BOOL port_is_direct(UINT16 p)
 {
     return (port_direct_bitmap[p >> 5] >> (p & 31)) & 1;
 }
-static __forceinline void port_set_direct(UINT16 p)
+static __inline void port_set_direct(UINT16 p)
 {
     InterlockedOr(&port_decided_bitmap[p >> 5], (LONG)(1u << (p & 31)));
     InterlockedOr(&port_direct_bitmap[p >> 5],  (LONG)(1u << (p & 31)));
 }
-static __forceinline void port_set_decided(UINT16 p)  // decided, but NOT direct (proxy/block)
+static __inline void port_set_decided(UINT16 p)  // decided, but NOT direct (proxy/block)
 {
     InterlockedOr(&port_decided_bitmap[p >> 5], (LONG)(1u << (p & 31)));
     // leave port_direct_bitmap bit at 0
 }
-static __forceinline void port_clear(UINT16 p)
+static __inline void port_clear(UINT16 p)
 {
     InterlockedAnd(&port_decided_bitmap[p >> 5], (LONG)~(1u << (p & 31)));
     InterlockedAnd(&port_direct_bitmap[p >> 5],  (LONG)~(1u << (p & 31)));
