@@ -172,6 +172,9 @@ static void IpcSetLogCallback(PBLogCallback cb)               { g_ipcLogCb = cb;
 static void IpcSetConnectionCallback(PBConnectionCallback cb) { g_ipcConnCb = cb; }
 static BOOL IpcStart(void) { PBIPC_BEGIN(PBOP_START); PBIPC_END(); }
 static BOOL IpcStop(void)  { PBIPC_BEGIN(PBOP_STOP);  PBIPC_END(); }
+static BOOL IpcSetRuleName(UINT32 id, const char *name)
+{ PBIPC_BEGIN(PBOP_SET_RULE_NAME); PbW_U32(&_w, id); PbW_Str(&_w, name); PBIPC_END(); }
+static BOOL IpcIsHealthy(void) { PBIPC_BEGIN(PBOP_IS_HEALTHY); PBIPC_END(); }
 
 // Asks the SCM to start the service (the installer grants interactive users this right).
 static void PbIpcTryStartService(void)
@@ -287,6 +290,7 @@ static int PB_LoadService(PBApi* api)
     api->SetTrafficLoggingEnabled = IpcSetTrafficLog;   api->SetEnabled = IpcSetEnabled;   api->SetLogEveryConnection = IpcSetLogAll;
     api->ClearConnectionLogs = IpcClearConnLogs;   api->Start = IpcStart; api->Stop = IpcStop;
     api->GetFlows = IpcGetFlows;
+    api->SetRuleName = IpcSetRuleName; api->IsHealthy = IpcIsHealthy;
     return PB_IPC_OK;
 }
 

@@ -36,12 +36,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$StaticOnly = $Only -and @($Only | Where-Object { $_ -ne 'static_checks' }).Count -eq 0
 $WinRoot = Split-Path -Parent $PSScriptRoot            # ...\Windows
 $RepoRoot = Split-Path -Parent $WinRoot
 $Out     = Join-Path $PSScriptRoot 'out'
 $Arch    = 'x64'
 
-if (-not (Test-Path (Join-Path $WinDivertPath 'include\windivert.h'))) {
+if (-not $StaticOnly -and -not (Test-Path (Join-Path $WinDivertPath 'include\windivert.h'))) {
     Write-Host "ERROR: WinDivert SDK not found at $WinDivertPath (pass -WinDivertPath)" -ForegroundColor Red
     exit 2
 }
@@ -56,11 +57,12 @@ if (Test-Path $vsWhere) {
         if (Test-Path $cand) { $vcvars = $cand }
     }
 }
-if (-not $vcvars -and -not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+if (-not $StaticOnly -and -not $vcvars -and -not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
     Write-Host "ERROR: Visual Studio C++ tools not found (run from a Developer prompt or install the C++ workload)" -ForegroundColor Red
     exit 2
 }
 
+if ($StaticOnly) { $Out = Join-Path $PSScriptRoot 'out-static' }
 if (Test-Path $Out) { [IO.Directory]::Delete($Out, $true) }
 New-Item -ItemType Directory -Path $Out | Out-Null
 
@@ -93,6 +95,8 @@ $tests = @(
     @{ n='test_service';         src=@('tests\test_service.c');                             cl="$clPlain /DUNICODE /D_UNICODE"; link='user32.lib advapi32.lib'; ui=$false },
     @{ n='test_engine';          src=@('tests\test_engine.c') + $core;                      cl=$clCore;  link=$lnCore; ui=$false },
     @{ n='test_rules_match';     src=@('tests\test_rules_match.c') + $core;                 cl=$clCore;  link=$lnCore; ui=$false },
+    @{ n='core_tests';           src=@('tests\core_tests.c') + $core;                       cl=$clCore;  link=$lnCore; ui=$false },
+    @{ n='gui_tests';            src=@('tests\gui_tests.c', $prof, $res);                  cl=$clUni; link=($lnGui -replace '/ENTRY:wWinMainCRTStartup', ''); ui=$true },
     @{ n='test_conntrack';       src=@('tests\test_conntrack.c') + $core;                   cl=$clCore;  link=$lnCore; ui=$false },
     @{ n='test_flows';           src=@('tests\test_flows.c') + $core;                       cl=$clCore;  link=$lnCore; ui=$false },
     @{ n='test_dns';             src=@('tests\test_dns.c') + $core;                         cl=$clCore;  link=$lnCore; ui=$false },

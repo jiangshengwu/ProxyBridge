@@ -39,6 +39,13 @@ static BOOL recv_n_bytes(SOCKET s, int n) { char buf[4096]; while (n > 0) { int 
 
 // polls the engine until `pred` holds or ~4 s pass
 static PB_FLOW g_f[PB_FLOWS_MAX];
+static volatile LONG snapshot_closed;
+static void capture_snapshot(const char *proc, DWORD pid, const char *ip, UINT16 port, const char *info)
+{
+    (void)proc; (void)pid; (void)ip; (void)port;
+    if (strstr(info, "status=CLOSED") && strstr(info, "rule=R17 Original browser") && strstr(info, "match=APP:C:\\Apps\\*"))
+        InterlockedIncrement(&snapshot_closed);
+}
 static UINT32  g_n;
 static BOOL wait_flows(UINT32 want, UINT64 sent, UINT64 recv)
 {
@@ -55,6 +62,8 @@ int main(void)
 {
     WSADATA wsa; WSAStartup(MAKEWORD(2, 2), &wsa);
     running = TRUE;                                              /* relay_start() refuses to work on a stopped engine */
+    ProxyBridge_SetConnectionCallback(capture_snapshot);
+    ProxyBridge_SetTrafficLoggingEnabled(TRUE);
     CHECK(relay_pool_start());
 
     CHECK(ProxyBridge_GetFlows(NULL, 10) == 0);                  /* bad arguments are harmless */
@@ -66,8 +75,12 @@ int main(void)
     CHECK(make_pair(&app, &relayClient) && make_pair(&relayProxy, &proxy));
     FLOW_META m; ZeroMemory(&m, sizeof m);
     m.pid = GetCurrentProcessId(); m.proxy_id = 9; m.rule_id = 17; m.port = 443; m.v6 = FALSE;
+    m.log_context.rule_id = 17;
+    strcpy_s(m.log_context.rule_name, sizeof(m.log_context.rule_name), "Original browser");
+    strcpy_s(m.log_context.match, sizeof(m.log_context.match), "APP:C:\\Apps\\*");
     UINT32 dest = 0x08080808u; memcpy(m.dest, &dest, 4);        /* 8.8.8.8 */
     CHECK(relay_start(relayClient, relayProxy, &m));
+    strcpy_s(m.log_context.rule_name, sizeof(m.log_context.rule_name), "Edited after connect");
 
     CHECK(wait_flows(1, 0, 0));
     CHECK(g_n == 1 && g_f[0].pid == m.pid && g_f[0].proxy_config_id == 9 && g_f[0].rule_id == 17 && g_f[0].port == 443 && !g_f[0].is_udp && !g_f[0].is_ipv6);
@@ -102,6 +115,7 @@ int main(void)
     CHECK(wait_flows(0, 0, 0));
     for (int i = 0; i < 300 && g_active_relays > 0; i++) Sleep(10);
     CHECK(g_active_relays == 0);                                                            /* nothing leaked */
+    CHECK(snapshot_closed == 1);  /* IOCP close event retains the decision-time rule snapshot */
     closesocket(px2);
 
     relay_pool_stop();

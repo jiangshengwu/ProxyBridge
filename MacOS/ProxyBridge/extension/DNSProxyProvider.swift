@@ -3,6 +3,7 @@ import NetworkExtension
 // Intercepts system DNS, forwards each query to the real resolver, and records
 // the resulting IP -> domain mapping so the transparent proxy can match rules by
 // domain. DoH/DoT that an app does itself is not visible here (by design).
+@objc(DNSProxyProvider)
 class DNSProxyProvider: NEDNSProxyProvider {
     // one udp session per (flow, resolver), reused for every query on that flow.
     // the system resolver keeps a handful of long-lived flows, so this replaces a
@@ -112,6 +113,7 @@ class DNSProxyProvider: NEDNSProxyProvider {
                 for response in responses {
                     if let parsed = DNSParser.parse(response) {
                         DNSMapStore.shared.record(domain: parsed.domain, ips: parsed.ips)
+                        NSLog("[ProxyBridge DNS] Resolved %@ -> %@ via %@", parsed.domain, parsed.ips.joined(separator: ", "), server.hostname)
                     }
                 }
                 flow.writeDatagrams(responses, sentBy: [NWEndpoint](repeating: server, count: responses.count)) { _ in }

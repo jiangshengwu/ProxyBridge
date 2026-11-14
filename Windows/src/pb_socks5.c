@@ -12,7 +12,13 @@ int socks5_read_connect_reply(SOCKET s, int *reply)
     unsigned char hdr[4];
     int len = recv_n(s, (char*)hdr, 4);
     if (reply) *reply = (len >= 2) ? hdr[1] : -1;
-    if (len != 4 || hdr[0] != SOCKS5_VERSION || hdr[1] != 0x00) return -1;
+    if (len == 4 && hdr[0] == SOCKS5_VERSION && hdr[1] != 0) {
+        int error = hdr[1] == 2 ? PB_ERROR_REJECTED : hdr[1] == 3 ? WSAENETUNREACH :
+                    hdr[1] == 4 ? WSAEHOSTUNREACH : hdr[1] == 5 ? WSAECONNREFUSED :
+                    hdr[1] == 6 ? WSAETIMEDOUT : WSAEPROTONOSUPPORT;
+        WSASetLastError(error); return -1;
+    }
+    if (len != 4 || hdr[0] != SOCKS5_VERSION) return -1;
 
     int drain;
     if      (hdr[3] == SOCKS5_ATYP_IPV4) drain = 4 + 2;
@@ -99,7 +105,7 @@ int socks5_connect_domain(SOCKET s, const char *hostname, UINT16 dest_port, cons
 
     if (buf[1] == 0x02)
     {
-        if (!use_auth) return -1;
+        if (!use_auth) { WSASetLastError(WSAEACCES); return -1; }
         size_t user_len = strnlen_s(cfg->username, sizeof(cfg->username));
         size_t pass_len = strnlen_s(cfg->password, sizeof(cfg->password));
         if (user_len > 255 || pass_len > 255) return -1;
@@ -109,9 +115,10 @@ int socks5_connect_domain(SOCKET s, const char *hostname, UINT16 dest_port, cons
         memcpy(&buf[3 + user_len], cfg->password, pass_len);
         if (send(s, (char*)buf, (int)(3 + user_len + pass_len), 0) != (int)(3 + user_len + pass_len)) return -1;
         len = recv_n(s, (char*)buf, 2);
-        if (len != 2 || buf[0] != 0x01 || buf[1] != 0x00) return -1;
+        if (len != 2) return -1;
+        if (buf[0] != 0x01 || buf[1] != 0x00) { WSASetLastError(WSAEACCES); return -1; }
     }
-    else if (buf[1] != SOCKS5_AUTH_NONE) return -1;
+    else if (buf[1] != SOCKS5_AUTH_NONE) { WSASetLastError(WSAEACCES); return -1; }
 
     // Build CONNECT request with ATYP_DOMAIN
     size_t hlen = strnlen_s(hostname, 255);
@@ -180,6 +187,7 @@ int socks5_connect(SOCKET s, UINT32 dest_ip, UINT16 dest_port, const PROXY_CONFI
         if (!use_auth)
         {
             log_message("SOCKS5: Server requires authentication but no credentials provided");
+            WSASetLastError(WSAEACCES);
             return -1;
         }
 
@@ -208,6 +216,7 @@ int socks5_connect(SOCKET s, UINT32 dest_ip, UINT16 dest_port, const PROXY_CONFI
         if (len != 2 || buf[0] != 0x01 || buf[1] != 0x00)
         {
             log_message("SOCKS5: Authentication failed");
+            if (len == 2) WSASetLastError(WSAEACCES);
             return -1;
         }
         log_message("SOCKS5: Authentication successful");
@@ -215,6 +224,7 @@ int socks5_connect(SOCKET s, UINT32 dest_ip, UINT16 dest_port, const PROXY_CONFI
     else if (buf[1] != SOCKS5_AUTH_NONE)
     {
         log_message("SOCKS5: Unsupported auth method: 0x%02X", buf[1]);
+        WSASetLastError(WSAEACCES);
         return -1;
     }
 
@@ -262,7 +272,7 @@ int socks5_connect_v6(SOCKET s, const UINT8 dest_ip6[16], UINT16 dest_port, cons
 
     if (buf[1] == 0x02)
     {
-        if (!use_auth) return -1;
+        if (!use_auth) { WSASetLastError(WSAEACCES); return -1; }
         size_t ul = strnlen_s(cfg->username, sizeof(cfg->username));
         size_t pl = strnlen_s(cfg->password, sizeof(cfg->password));
         if (ul > 255 || pl > 255) return -1;
@@ -272,9 +282,10 @@ int socks5_connect_v6(SOCKET s, const UINT8 dest_ip6[16], UINT16 dest_port, cons
         memcpy(&buf[3 + ul], cfg->password, pl);
         if (send(s, (char*)buf, (int)(3 + ul + pl), 0) != (int)(3 + ul + pl)) return -1;
         len = recv_n(s, (char*)buf, 2);
-        if (len != 2 || buf[0] != 0x01 || buf[1] != 0x00) return -1;
+        if (len != 2) return -1;
+        if (buf[0] != 0x01 || buf[1] != 0x00) { WSASetLastError(WSAEACCES); return -1; }
     }
-    else if (buf[1] != SOCKS5_AUTH_NONE) return -1;
+    else if (buf[1] != SOCKS5_AUTH_NONE) { WSASetLastError(WSAEACCES); return -1; }
 
     buf[0] = SOCKS5_VERSION;
     buf[1] = SOCKS5_CMD_CONNECT;

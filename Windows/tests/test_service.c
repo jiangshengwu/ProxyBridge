@@ -35,6 +35,9 @@ static void   SLogAll(BOOL v)  { g_logAllArg = v; }
 static void   SClear(void)     { g_cleared++; }
 static BOOL   SStart(void)     { g_started++; return TRUE; }
 static BOOL   SStop(void)      { g_stopped++; return FALSE; }
+static char g_ruleName[384];
+static BOOL SName(UINT32 id, const char *name) { R.id = id; cp(g_ruleName, sizeof(g_ruleName), name); return TRUE; }
+static BOOL SHealth(void) { return TRUE; }
 static UINT32 g_flowsAsked = 0, g_flowsHave = 0;
 static UINT32 SGetFlows(PBFlow* out, UINT32 max)
 {
@@ -66,6 +69,13 @@ int main(void)
     g_api.SetTrafficLoggingEnabled = STraffic; g_api.SetEnabled = SEnabled; g_api.SetLogEveryConnection = SLogAll; g_api.ClearConnectionLogs = SClear;
     g_api.Start = SStart; g_api.Stop = SStop; g_api.TestProxyConfigEx = NULL; g_api.GetFlows = SGetFlows;
     UINT32 ret;
+    g_api.SetRuleName = SName; g_api.IsHealthy = SHealth;
+    begin(PBOP_SET_RULE_NAME); PbW_U32(&W, 77); PbW_Str(&W, "Browser snapshot");
+    CHECK(run(&ret) && ret && R.id == 77 && !strcmp(g_ruleName, "Browser snapshot"));
+    begin(PBOP_SET_RULE_NAME); PbW_U32(&W, 77); CHECK(!run(&ret));
+    begin(PBOP_IS_HEALTHY); CHECK(run(&ret) && ret);
+    g_api.IsHealthy = NULL; begin(PBOP_IS_HEALTHY); CHECK(run(&ret) && ret == 0);
+    g_api.IsHealthy = SHealth;
 
     /* ================= request handler ================= */
     begin(PBOP_HELLO);                                   CHECK(run(&ret) && ret == PB_PROTO_VERSION && PB_PROTO_VERSION >= 5);

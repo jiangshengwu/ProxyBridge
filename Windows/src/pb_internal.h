@@ -54,6 +54,7 @@ typedef char pb_fd_setsize_fits_all_proxies[(FD_SETSIZE >= 2 * MAX_PROXY_CONFIGS
 
 typedef struct PROCESS_RULE {
     UINT32 rule_id;
+    char name[384];
     char process_name[MAX_RULE_PROCESS_LIST];
     char *target_hosts;   // Dynamic: IP filter "*", "192.168.*.*", "10.0.0.1;172.16.0.0"
     char *target_ports;   // Dynamic: Port filter "*", "80", "80;443", "8000-9000"
@@ -89,7 +90,7 @@ typedef struct PROCESS_RULE {
 #define DNS_CACHE_TTL_MS  300000  // 5 minutes
 
 typedef struct DNS_CACHE_ENTRY {
-    UINT32 ip;              // network-byte-order IPv4 
+    UINT32 ip;              // network-byte-order IPv4
     char   domain[256];
     ULONGLONG expire_tick;
     struct DNS_CACHE_ENTRY *next;
@@ -102,7 +103,29 @@ typedef struct DNS_CACHE_ENTRY_V6 {
     struct DNS_CACHE_ENTRY_V6 *next;
 } DNS_CACHE_ENTRY_V6;
 
+typedef struct {
+    DWORD pid;
+    UINT32 rule_id;
+    char process[260];
+    char rule_name[384];
+    char match[1024];
+} PB_LOG_CONTEXT;
+#ifdef _MSC_VER
+#define PB_THREAD_LOCAL __declspec(thread)
+#else
+#define PB_THREAD_LOCAL __thread
+#endif
+extern PB_THREAD_LOCAL PB_LOG_CONTEXT pb_log_context;
+void emit_connection_log(const char*, DWORD, const char*, UINT16, const char*);
+void emit_connection_status(const PB_LOG_CONTEXT*, const char*, UINT16, const char*, const char*, const char*);
+BOOL get_log_context(UINT16, BOOL, BOOL, PB_LOG_CONTEXT*);
+const char* connection_error_status(int);
+void udp_log_status(UINT16, BOOL, int, const char*);
+#define PB_ERROR_REJECTED 200001
+
 typedef struct CONNECTION_INFO {
+    PB_LOG_CONTEXT log_context;
+    int udp_log_state;
     UINT16 src_port;
     BOOL   is_udp;             // protocol - a TCP and a UDP flow may share a local port
     UINT32 src_ip;
@@ -126,6 +149,7 @@ typedef struct CONNECTION_INFO {
 } CONNECTION_INFO;
 
 typedef struct {
+    PB_LOG_CONTEXT log_context;
     SOCKET client_socket;
     UINT32 orig_dest_ip;
     UINT16 orig_dest_port;
@@ -146,6 +170,8 @@ typedef struct {
 typedef struct {
     SOCKET sock_client;   // app-side socket
     SOCKET sock_proxy;    // proxy-side socket
+    volatile LONG finished;
+    DWORD *outcome;
     volatile LONG refs;   // ref-count; last thread out closes both sockets
 } RELAY_PAIR;
 
@@ -226,33 +252,33 @@ extern volatile LONG port_direct_bitmap[2048];  // 8 KB
 extern UINT16 g_local_relay_port;
 // Set by match_rule*_inner on the calling thread: the "localhost via proxy" flag of the rule that
 // produced the last verdict (FALSE when nothing matched). Read right after check_process_rule*().
-extern __declspec(thread) BOOL g_tl_rule_localhost;
-extern __declspec(thread) UINT32 g_tl_rule_id;   // same for the id of the rule that produced the verdict (0 = none)
+extern PB_THREAD_LOCAL BOOL g_tl_rule_localhost;
+extern PB_THREAD_LOCAL UINT32 g_tl_rule_id;   // same for the id of the rule that produced the verdict (0 = none)
 extern LogCallback g_log_callback;
 extern ConnectionCallback g_connection_callback;
 extern char  *g_pidtbl_buf;
 extern DWORD  g_pidtbl_cap;
 
 // ---- per-source-port decision bitmaps: hot-path inline helpers ----
-static __forceinline BOOL port_is_decided(UINT16 p)
+static __inline BOOL port_is_decided(UINT16 p)
 {
     return (port_decided_bitmap[p >> 5] >> (p & 31)) & 1;
 }
-static __forceinline BOOL port_is_direct(UINT16 p)
+static __inline BOOL port_is_direct(UINT16 p)
 {
     return (port_direct_bitmap[p >> 5] >> (p & 31)) & 1;
 }
-static __forceinline void port_set_direct(UINT16 p)
+static __inline void port_set_direct(UINT16 p)
 {
     InterlockedOr(&port_decided_bitmap[p >> 5], (LONG)(1u << (p & 31)));
     InterlockedOr(&port_direct_bitmap[p >> 5],  (LONG)(1u << (p & 31)));
 }
-static __forceinline void port_set_decided(UINT16 p)  // decided, but NOT direct (proxy/block)
+static __inline void port_set_decided(UINT16 p)  // decided, but NOT direct (proxy/block)
 {
     InterlockedOr(&port_decided_bitmap[p >> 5], (LONG)(1u << (p & 31)));
     // leave port_direct_bitmap bit at 0
 }
-static __forceinline void port_clear(UINT16 p)
+static __inline void port_clear(UINT16 p)
 {
     InterlockedAnd(&port_decided_bitmap[p >> 5], (LONG)~(1u << (p & 31)));
     InterlockedAnd(&port_direct_bitmap[p >> 5],  (LONG)~(1u << (p & 31)));
@@ -413,7 +439,7 @@ DWORD WINAPI transfer_handler(LPVOID arg);
 BOOL relay_pool_start(void);                       // IOCP relay pool (pb_relay.c)
 void relay_pool_stop(void);
 // What the live connections view shows about a relayed TCP connection (copied into the relay record).
-typedef struct { DWORD pid; UINT32 proxy_id; UINT32 rule_id; UINT16 port; BOOL v6; UINT8 dest[16]; } FLOW_META;
+typedef struct { DWORD pid; UINT32 proxy_id; UINT32 rule_id; UINT16 port; BOOL v6; UINT8 dest[16]; PB_LOG_CONTEXT log_context; } FLOW_META;
 BOOL relay_start(SOCKET client, SOCKET proxy, const FLOW_META *meta);
 UINT32 relay_flows_snapshot(PB_FLOW *out, UINT32 max);   // live proxied TCP connections, newest first; raw fields only
 extern volatile LONG g_active_relays;

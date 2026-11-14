@@ -202,7 +202,7 @@ static void FlowText(const FlowRow* r, int col, ULONGLONG now, wchar_t* out, int
 }
 
 // ---- the window ----
-static void DarkListView(HWND lv, DWORD extraExStyle);        // dialogs.h
+static void ThemeListView(HWND lv, DWORD extraExStyle);        // dialogs.h
 
 static const int g_flColStr[7] = { S_FL_COL_APP, S_FL_COL_TARGET, S_FL_COL_PROTO, S_FL_COL_STATUS, S_FL_COL_PROXY, S_FL_COL_SENT, S_FL_COL_RECV };
 
@@ -221,7 +221,7 @@ static HWND FlowsCreate(HWND parent)
                                WS_CHILD | WS_BORDER | WS_TABSTOP | LVS_REPORT | LVS_OWNERDATA | LVS_SHOWSELALWAYS | LVS_SINGLESEL,
                                0, 0, 0, 0, parent, (HMENU)(UINT_PTR)IDC_FLOWS, g_hInst, NULL);
     if (!g_hFlows) return NULL;
-    DarkListView(g_hFlows, LVS_EX_LABELTIP);
+    ThemeListView(g_hFlows, LVS_EX_LABELTIP);
     static const int w[7] = { 190, 250, 70, 120, 330, 90, 90 };
     LVCOLUMNW c; c.mask = LVCF_TEXT | LVCF_WIDTH;
     for (int i = 0; i < 7; i++) { c.pszText = (LPWSTR)T(g_flColStr[i]); c.cx = Sc(w[i]); ListView_InsertColumn(g_hFlows, i, &c); }

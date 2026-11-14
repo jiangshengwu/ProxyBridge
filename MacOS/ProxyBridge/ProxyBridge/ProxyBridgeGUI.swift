@@ -45,20 +45,20 @@ struct ProxyBridgeGUIApp: App {
         .windowStyle(.hiddenTitleBar)
         .commands {
             CommandGroup(replacing: .newItem) { }
-            
+
             CommandMenu("Proxy") {
                 Button("Proxy Settings...") {
                     openProxySettingsWindow()
                 }
                 .keyboardShortcut(",", modifiers: .command)
-                
+
                 Button("Proxy Rules...") {
                     openProxyRulesWindow()
                 }
                 .keyboardShortcut("r", modifiers: .command)
-                
+
                 Divider()
-                
+
                 Toggle("Enable Traffic Logging", isOn: Binding(
                     get: { viewModel.isTrafficLoggingEnabled },
                     set: { _ in viewModel.toggleTrafficLogging() }
@@ -140,43 +140,43 @@ struct ProxyBridgeGUIApp: App {
                 }
             }
         }
-        
+
         Window("Proxy Settings", id: "proxy-settings") {
             ProxySettingsView(viewModel: viewModel)
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
-        
+
         Window("Proxy Rules", id: "proxy-rules") {
             ProxyRulesView(viewModel: viewModel)
         }
         .defaultPosition(.center)
-        
+
         Window("About ProxyBridge", id: "about") {
             AboutView()
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
-        
+
         Window("Check for Updates", id: "update-check") {
             UpdateCheckView()
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
     }
-    
+
     private func openProxySettingsWindow() {
         NSApp.sendAction(#selector(AppDelegate.openProxySettings), to: nil, from: nil)
     }
-    
+
     private func openProxyRulesWindow() {
         NSApp.sendAction(#selector(AppDelegate.openProxyRules), to: nil, from: nil)
     }
-    
+
     private func openAboutWindow() {
         NSApp.sendAction(#selector(AppDelegate.openAbout), to: nil, from: nil)
     }
-    
+
     private func openUpdateCheckWindow() {
         NSApp.sendAction(#selector(AppDelegate.openUpdateCheck), to: nil, from: nil)
     }
@@ -228,12 +228,12 @@ struct ProxyBridgeGUIApp: App {
 
     private func checkForUpdatesOnStartup() {
         let shouldCheck = UserDefaults.standard.object(forKey: "checkForUpdatesOnStartup") as? Bool ?? true
-        
+
         if shouldCheck {
             Task {
                 let updateService = UpdateService()
                 let versionInfo = await updateService.checkForUpdates()
-                
+
                 if versionInfo.isUpdateAvailable {
                     await MainActor.run {
                         AppDelegate.pendingUpdateInfo = versionInfo
@@ -317,10 +317,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     @objc private func quitApp() {
+        AppDelegate.viewModel?.flushWorkingSet()
         NSApp.terminate(nil)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        AppDelegate.viewModel?.flushWorkingSet()
         // Clear extension memory before app quits
         AppDelegate.viewModel?.stopProxy()
 
@@ -331,31 +333,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         return .terminateLater
     }
-    
+
     @objc func openProxySettings() {
         openWindow(title: "Proxy Settings", size: NSSize(width: 600, height: 500)) {
             ProxySettingsView(viewModel: AppDelegate.viewModel!)
         }
     }
-    
+
     @objc func openProxyRules() {
         openWindow(title: "Proxy Rules", size: NSSize(width: 1200, height: 600), resizable: true) {
             ProxyRulesView(viewModel: AppDelegate.viewModel!)
         }
     }
-    
+
     @objc func openAbout() {
         openWindow(title: "About ProxyBridge", size: NSSize(width: 400, height: 350)) {
             AboutView()
         }
     }
-    
+
     @objc func openUpdateCheck() {
         openWindow(title: "Check for Updates", size: NSSize(width: 450, height: 300)) {
             UpdateCheckView()
         }
     }
-    
+
     @objc func showUpdateNotification(_ sender: Any?) {
         if let versionInfo = AppDelegate.pendingUpdateInfo {
             openWindow(title: "Update Available", size: NSSize(width: 450, height: 350)) {
@@ -364,7 +366,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             AppDelegate.pendingUpdateInfo = nil
         }
     }
-    
+
     private func openWindow<Content: View>(
         title: String,
         size: NSSize,
@@ -387,12 +389,15 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
 // grabs the main SwiftUI window so the app delegate can intercept its close
 struct WindowAccessor: NSViewRepresentable {
+    private static let defaultWindowSizeAppliedKey = "mainWindowTwoThirdsSizeApplied"
+
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
         DispatchQueue.main.async {
             guard let window = view.window else { return }
             AppDelegate.mainWindow = window
             window.delegate = AppDelegate.shared
+            Self.applyDefaultWindowSizeIfNeeded(to: window)
             // launched at login, keep it hidden in the menu bar
             if AppDelegate.startHidden {
                 AppDelegate.startHidden = false
@@ -403,5 +408,24 @@ struct WindowAccessor: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {}
-}
 
+    private static func applyDefaultWindowSizeIfNeeded(to window: NSWindow) {
+        let defaults = UserDefaults.standard
+        guard !defaults.bool(forKey: defaultWindowSizeAppliedKey),
+              let screen = window.screen ?? NSScreen.main else {
+            return
+        }
+
+        let visibleFrame = screen.visibleFrame
+        let size = NSSize(
+            width: max(800, visibleFrame.width * 2 / 3),
+            height: max(600, visibleFrame.height * 2 / 3)
+        )
+        let origin = NSPoint(
+            x: visibleFrame.midX - size.width / 2,
+            y: visibleFrame.midY - size.height / 2
+        )
+        window.setFrame(NSRect(origin: origin, size: size), display: true)
+        defaults.set(true, forKey: defaultWindowSizeAppliedKey)
+    }
+}

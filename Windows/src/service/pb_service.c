@@ -121,6 +121,12 @@ static BOOL Dispatch(const BYTE *req, DWORD reqLen, PbW *resp)
     switch (op)
     {
     case PBOP_HELLO: ret = PB_PROTO_VERSION; break;
+    case PBOP_IS_HEALTHY: ret = g_api.IsHealthy && g_api.IsHealthy(); break;
+    case PBOP_SET_RULE_NAME: {
+        UINT32 id = PbR_U32(&r); char name[384];
+        PbR_Str(&r, name, sizeof(name), NULL);
+        if (!r.ok) return FALSE;
+        ret = g_api.SetRuleName && g_api.SetRuleName(id, name); break; }
 
     case PBOP_ADD_PROXY: {
         UINT32 type = PbR_U32(&r); PbR_Str(&r, ip, sizeof(ip), NULL); UINT32 port = PbR_U32(&r);

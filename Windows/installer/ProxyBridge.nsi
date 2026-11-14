@@ -23,7 +23,13 @@ SetCompressor /SOLID lzma
 SetCompressorDictSize 64
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
-OutFile "ProxyBridge-Setup-${PRODUCT_VERSION}.exe"
+!ifndef PB_OUTPUT_DIR
+!define PB_OUTPUT_DIR "..\output"
+!endif
+!ifndef PB_SETUP_PATH
+!define PB_SETUP_PATH "ProxyBridge-Setup-${PRODUCT_VERSION}.exe"
+!endif
+OutFile "${PB_SETUP_PATH}"
 InstallDir "$PROGRAMFILES64\${PRODUCT_NAME}"
 InstallDirRegKey HKLM "${PRODUCT_UNINST_KEY}" "InstallLocation"
 RequestExecutionLevel admin
@@ -88,12 +94,12 @@ Section "MainSection" SEC01
   SetOutPath "$INSTDIR"
   SetOverwrite on
 
-  File "..\output\ProxyBridge.exe"
-  File "..\output\ProxyBridge_CLI.exe"
-  File "..\output\ProxyBridgeCore.dll"
-  File "..\output\ProxyBridgeSvc.exe"
-  File "..\output\WinDivert.dll"
-  File "..\output\WinDivert64.sys"
+  File "${PB_OUTPUT_DIR}\ProxyBridge.exe"
+  File "${PB_OUTPUT_DIR}\ProxyBridge_CLI.exe"
+  File "${PB_OUTPUT_DIR}\ProxyBridgeCore.dll"
+  File "${PB_OUTPUT_DIR}\ProxyBridgeSvc.exe"
+  File "${PB_OUTPUT_DIR}\WinDivert.dll"
+  File "${PB_OUTPUT_DIR}\WinDivert64.sys"
 
   ; The service runs as SYSTEM from this folder, so ordinary users must never be able to modify it
   ; (a folder chosen outside Program Files, e.g. D:\Tools, is usually writable by every user).

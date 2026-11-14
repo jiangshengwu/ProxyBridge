@@ -74,5 +74,25 @@ t("list of ip and domain", matcher("*", "1.2.3.4;*.github.com", "*").matchesHost
 t("domain rule without any known name", matcher("*", "*.github.com", "*").matchesHost(ip: "9.9.9.9", domains: []), false)
 t("all hosts", matcher("*", "*", "*").matchesHost(ip: "9.9.9.9", domains: []), true)
 
+// Migration: app-bundle provenance, full paths, empty list segments and first-match ordering.
+let helperPath = "/Applications/Browser.app/Contents/Frameworks/Helper.app/Contents/MacOS/worker"
+let bundleRule = ProxyRule(ruleId: 10, name: "Browser bundle", processNames: "Browser.app", targetHosts: "*", targetPorts: "*", ruleProtocol: .both, action: "DIRECT", enabled: true)
+t("containing app covers helpers", bundleRule.matchProcess(bundleId: "helper.id", processName: "worker", executablePath: helperPath)?.kind == "APP", true)
+let pathRule = ProxyRule(ruleId: 11, processNames: "/Applications/Browser.app/*", targetHosts: "*", targetPorts: "*", ruleProtocol: .both, action: "DIRECT", enabled: true)
+t("full executable path and provenance", pathRule.matchProcess(bundleId: "helper.id", processName: "worker", executablePath: helperPath)?.kind == "PROC", true)
+let emptySegment = ProxyRule(ruleId: 12, processNames: "safari;", targetHosts: "*", targetPorts: "*", ruleProtocol: .both, action: "DIRECT", enabled: true)
+t("empty segment does not match worker", emptySegment.matchProcess(bundleId: "helper.id", processName: "worker", executablePath: helperPath) != nil, false)
+let catchAll = ProxyRule(ruleId: 13, name: "Catch all", processNames: "*", targetHosts: "*", targetPorts: "*", ruleProtocol: .both, action: "BLOCK", enabled: true)
+func first(_ rules: [ProxyRule], destination: String = "1.2.3.4", proto: RuleProtocol = .tcp) -> MatchedRule? {
+    ProxyRule.firstMatch(in: rules.map { ($0, ProxyRule.Matcher($0)) }, bundleId: "helper.id", processName: "worker", executablePath: helperPath, destination: destination, port: 443, connectionProtocol: proto, checkIpPort: true)
+}
+t("catch-all first wins IPv4", first([catchAll, bundleRule])?.rule.ruleId == 13, true)
+t("catch-all first wins IPv6", first([catchAll, bundleRule], destination: "2001:db8::1")?.rule.ruleId == 13, true)
+t("reordered app rule wins", first([bundleRule, catchAll])?.rule.ruleId == 10, true)
+t("rule provenance is preserved", first([bundleRule, catchAll])?.processMatch.kind == "APP", true)
+var disabled = catchAll; disabled.enabled = false
+t("disabled catch-all is skipped", first([disabled, bundleRule])?.rule.ruleId == 10, true)
+t("UDP ordering", first([catchAll, bundleRule], proto: .udp)?.rule.ruleId == 13, true)
+
 print(fails == 0 ? "matcher tests: ALL PASS" : "matcher tests: \(fails) FAILED")
 exit(fails == 0 ? 0 : 1)

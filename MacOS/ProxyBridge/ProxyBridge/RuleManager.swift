@@ -2,9 +2,10 @@ import Foundation
 import NetworkExtension
 
 struct RuleManager {
-    
+
     static func addRule(
         session: NETunnelProviderSession,
+        name: String = "",
         processNames: String,
         targetHosts: String,
         targetPorts: String,
@@ -17,6 +18,7 @@ struct RuleManager {
             session: session,
             action: "addRule",
             params: [
+                "name": name,
                 "processNames": processNames,
                 "targetHosts": targetHosts,
                 "targetPorts": targetPorts,
@@ -33,7 +35,7 @@ struct RuleManager {
             }
         }
     }
-    
+
     static func clearRules(
         session: NETunnelProviderSession,
         completion: @escaping (Bool, String) -> Void
@@ -45,7 +47,7 @@ struct RuleManager {
             completion(success, message)
         }
     }
-    
+
     private static func sendMessage(
         session: NETunnelProviderSession,
         action: String,
@@ -54,24 +56,28 @@ struct RuleManager {
     ) {
         var message = params
         message["action"] = action
-        
+
         guard let data = try? JSONSerialization.data(withJSONObject: message) else {
             completion(false, nil)
             return
         }
-        
-        try? session.sendProviderMessage(data) { response in
-            guard let responseData = response,
-                  let result = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
-                  let status = result["status"] as? String else {
-                completion(false, nil)
-                return
+
+        do {
+            try session.sendProviderMessage(data) { response in
+                guard let responseData = response,
+                      let result = try? JSONSerialization.jsonObject(with: responseData) as? [String: Any],
+                      let status = result["status"] as? String else {
+                    completion(false, nil)
+                    return
+                }
+
+                completion(status == "ok", result)
             }
-            
-            completion(status == "ok", result)
+        } catch {
+            completion(false, nil)
         }
     }
-    
+
     static func resyncRules(
         session: NETunnelProviderSession,
         completion: @escaping (Bool, Int) -> Void
@@ -119,6 +125,7 @@ struct RuleManager {
         let rules = DefaultProxy.resolve(savedRules, to: defaultAction)
         let payload: [[String: Any]] = rules.map { rule in
             [
+                "name": rule["name"] as? String ?? "",
                 "processNames": rule["processNames"] as? String ?? "",
                 "targetHosts": rule["targetHosts"] as? String ?? "",
                 "targetPorts": rule["targetPorts"] as? String ?? "",
@@ -128,21 +135,26 @@ struct RuleManager {
             ]
         }
 
-        sendMessage(session: session, action: "setRules", params: ["rules": payload]) { success, result in
-            if success {
-                let count = result?["count"] as? Int ?? payload.count
-                DispatchQueue.main.async { completion(true, count) }
-                return
-            }
-            // an extension that predates setRules answers nothing, fall back to
-            // clear + add one by one (leaves a short gap while it runs)
-            clearRules(session: session) { _, _ in
-                guard !rules.isEmpty else {
-                    DispatchQueue.main.async { completion(true, 0) }
+        func sendViaProvider() {
+            sendMessage(session: session, action: "setRules", params: ["rules": payload]) { success, result in
+                if success {
+                    let count = result?["count"] as? Int ?? payload.count
+                    DispatchQueue.main.async { completion(true, count) }
                     return
                 }
-                addRulesInOrder(session: session, rules: rules, index: 0, added: 0, completion: completion)
+                // An extension that predates setRules uses clear + add in order.
+                clearRules(session: session) { _, _ in
+                    guard !rules.isEmpty else {
+                        DispatchQueue.main.async { completion(true, 0) }
+                        return
+                    }
+                    addRulesInOrder(session: session, rules: rules, index: 0, added: 0, completion: completion)
+                }
             }
+        }
+        LocalIPCClient.shared.syncRules(rules) { success, count in
+            if success { DispatchQueue.main.async { completion(true, count) } }
+            else { sendViaProvider() }
         }
     }
 
@@ -154,12 +166,13 @@ struct RuleManager {
         completion: @escaping (Bool, Int) -> Void
     ) {
         guard index < rules.count else {
-            DispatchQueue.main.async { completion(true, added) }
+            DispatchQueue.main.async { completion(added == rules.count, added) }
             return
         }
         let rule = rules[index]
         addRule(
             session: session,
+            name: rule["name"] as? String ?? "",
             processNames: rule["processNames"] as? String ?? "",
             targetHosts: rule["targetHosts"] as? String ?? "",
             targetPorts: rule["targetPorts"] as? String ?? "",

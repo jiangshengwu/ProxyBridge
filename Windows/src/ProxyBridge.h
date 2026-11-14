@@ -49,6 +49,9 @@ PROXYBRIDGE_API int    ProxyBridge_TestProxyConfig(UINT32 config_id, const char*
 typedef void (*ProxyTestLogCallback)(const char* line, void* user);
 PROXYBRIDGE_API int    ProxyBridge_TestProxyConfigEx(UINT32 config_id, const char* target_host, UINT16 target_port, ProxyTestLogCallback callback, void* user);
 
+PROXYBRIDGE_API BOOL ProxyBridge_SetRuleName(UINT32 rule_id, const char* name);
+PROXYBRIDGE_API BOOL ProxyBridge_IsHealthy(void);
+
 // Rule management - proxy_config_id selects which proxy config the rule uses (0 = first available)
 // localhost_via_proxy: per rule. TRUE = connections to localhost (127.x / ::1) that match this rule are proxied;
 // FALSE = they are sent direct (most proxies refuse localhost, and it never reaches a remote proxy's own machine).

@@ -151,9 +151,10 @@ BEGIN
     AUTOCHECKBOX    "Enabled",         IDC_RE_ENABLED,  410,  10, 62, 10
 
     LTEXT           "Applications:",   IDC_RE_L_APPS,     8,  32, 80, 10
-    EDITTEXT        IDC_RE_APPS,       92,  30, 250, 13, ES_AUTOHSCROLL | WS_TABSTOP
-    PUSHBUTTON      "Running...",      IDC_RE_RUNNING,  346,  29, 62, 14
-    PUSHBUTTON      "Browse...",       IDC_RE_BROWSE,   412,  29, 60, 14
+    EDITTEXT        IDC_RE_APPS,       92,  30, 190, 13, ES_AUTOHSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Running...",      IDC_RE_RUNNING,  286,  29, 62, 14
+    PUSHBUTTON      "Browse...",       IDC_RE_BROWSE,   350,  29, 60, 14
+    PUSHBUTTON      "Folder...",       IDC_RE_FOLDER,   412,  29, 60, 14
     LTEXT           "",                IDC_RE_EX_APPS,   92,  46, 380, 9
 
     LTEXT           "Target Hosts:",   IDC_RE_L_HOSTS,    8,  62, 80, 10

@@ -456,6 +456,31 @@ It runs in the foreground until you press **Ctrl+C**, which clears the rules and
 
 To create a `.pkg` installer, additional packaging steps are required using `pkgbuild` or a similar tool. See the [packaging documentation](https://developer.apple.com/documentation/xcode/distributing-your-app-for-beta-testing-and-releases) for details.
 
+## Upstream migration validation
+
+The migration branch combines upstream macOS 4.1.3 (including CLI, per-profile DNS,
+default proxy and tunnel repair) with the fork's connection outcomes, rule-name
+snapshots, containing-app matching, rule reordering, log filters/source separation,
+profile persistence, authenticated loopback IPC and configuration health recovery.
+The app and extension build number is 13. Full executable-path matching and the
+upstream proxy-reply parsing fixes are retained.
+
+On macOS with Xcode installed, run from the repository root:
+
+```bash
+bash MacOS/tests/verify-port.sh
+```
+
+This runs the logic/migration regression suite, parses Swift, validates the project
+and plist, and builds the app and extension without signing. It does not install or
+activate an extension. Empty local signing xcconfig placeholders are created only
+if missing. For actual traffic testing, sign/install using the existing local
+signing configuration and test rule priority, nested application helpers, default
+proxy rules, DNS settings, TCP/UDP failures, profile switching and sleep/wake.
+
+Windows-side checks cover syntax and configuration consistency only. They do not
+replace native Xcode compilation or macOS extension integration tests.
+
 ## License
 
 See the [LICENSE](../LICENSE) file for details.

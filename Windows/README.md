@@ -48,6 +48,93 @@ Universal proxy client for Windows applications - route any application through 
 
 ## Usage
 
+### Rule priority and diagnostics
+
+Rules are evaluated **from top to bottom; the first enabled matching rule wins**, for
+both IPv4 and IPv6. A catch-all `*` rule participates in this order just like any other
+rule. Put a default/catch-all rule last if application-specific rules should take
+precedence. This changes the older Windows behavior, which deferred unrestricted
+catch-all rules until after application-specific rules.
+
+In the rule editor, **Folder...** selects an application directory and adds a
+`C:\Path\To\Application\*` rule. This covers executables in that directory and its
+subdirectories, including helpers. Choose the application's own directory: selecting
+a shared directory also includes other applications installed beneath it. **Browse...**
+continues to select individual executable names.
+
+Connection events include the rule ID, its name at the time of the decision, and the
+matching process/folder pattern (`PROC` / `APP`), catch-all (`ANY`), or `DEFAULT`.
+TCP events distinguish `CONNECTING`, `CONNECTED`, `AUTH_FAILED`, `REJECTED`, `REFUSED`,
+`UNREACHABLE`, `TIMEOUT`, `RESET`, `FAILED`, and `CLOSED`. `DIRECT` and `BLOCKED` describe
+routing decisions. UDP emits `RELAYING` after sending a datagram to the proxy, or
+`FAILED`; repeated identical UDP states are suppressed. Neither a direct-routing
+event nor sending a UDP datagram confirms delivery to the destination.
+
+The log timestamps include the date. The **ALL / PROXIED / DIRECT / REJECT / TCP / UDP**
+buttons combine routing and protocol filters. Counts represent retained **events**,
+not unique or currently open connections. Text search and the advanced include/exclude
+filters apply to retained history without discarding it. Clear, automatic clearing,
+and the bounded history limit still remove old records. Activity logs can be filtered
+by **GUI** or **CORE** source.
+
+The Windows GUI uses a light palette with white log areas, pale gray panels, and blue
+accents. Logs use selectable rich text: processes/success are green, destinations
+orange, proxies purple, rules teal, errors red, and pending/timeout states amber.
+Timestamps and secondary details are gray. Colours remain intact when filtering or
+rebuilding log history; copying text preserves the original characters.
+
+Quick filters use matching coloured badges (proxy: purple, direct: blue, reject: red,
+TCP: teal, UDP: orange), with a blue background and white text when selected.
+
+Each log view follows new events while its vertical scrollbar is at the bottom.
+Scrolling up pauses the displayed view and preserves the current selection; events
+continue entering the bounded history. Returning to the bottom immediately catches
+up and resumes following. The two log tabs operate independently. Automatic clearing
+is deferred while reading older entries; explicitly clearing or changing filters
+starts a fresh view at the bottom.
+
+While running, the GUI checks engine-worker liveness every 15 seconds, including when
+the window is hidden. It logs a warning once when a worker has exited. Restart the
+application to recover. This check does not test Internet connectivity and does not
+automatically restart active traffic. The GUI and service use protocol version 7;
+install the GUI, service and core DLL together when upgrading from upstream 4.3.0.
+
+The preferred TCP relay uses upstream's IOCP pool and reports close/error events
+with the decision-time rule snapshot. The blocking fallback checks cancellation
+without expiring idle connections and bounds a stalled send to 45 seconds.
+
+### Regression tests
+
+With an x64 LLVM-MinGW compiler and an extracted WinDivert distribution:
+
+```powershell
+.\tests\run.ps1 -Compiler C:\llvm-mingw\bin\clang.exe -WinDivertPath C:\WinDivert-2.2.2-A
+```
+
+Tests exercise the real C rule matcher, IPv4/IPv6 priority, snapshots after rule edits,
+application-folder boundaries, UDP event suppression, loopback proxy replies, and GUI
+log filters. They do not start WinDivert interception or install a driver. Full traffic
+routing, sleep/resume, and long-running stability still require an administrator-run
+integration test with the GUI or CLI.
+
+The complete MSVC suite is `tests\run_tests.ps1`; the diagnostics and RichEdit
+regressions above are included in that suite. Static checks can be run without a
+compiler using `tests\run_tests.ps1 -Only static_checks`.
+
+For a portable LLVM-MinGW build from WSL/Linux, set `TOOLCHAIN` to the toolchain
+directory and `WINDIVERT` to the extracted SDK, then run `bash Windows/build-mingw.sh`
+from the repository root. `OUTPUT_DIR` and `TEST_DIR` optionally select absolute
+output directories; the defaults are `Windows/output/mingw-x64` and
+`Windows/tests/out/mingw-x64`. Run the resulting tests on Windows with:
+
+```powershell
+.\Windows\tests\run-built.ps1
+```
+
+The build produces GUI, CLI, core DLL and service binaries. It does not install a
+service or load a driver. NSIS accepts `/DPB_OUTPUT_DIR=<binary directory>` and
+`/DPB_SETUP_PATH=<installer path>` for packaging an isolated build directory.
+
 ### GUI Application
 
 Launch `ProxyBridge.exe` with Administrator privileges for an intuitive graphical interface.

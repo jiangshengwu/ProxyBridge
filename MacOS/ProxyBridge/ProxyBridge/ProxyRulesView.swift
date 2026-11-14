@@ -94,17 +94,23 @@ struct ProxyRulesView: View {
     @State private var selectedRuleIds: Set<String> = []
     @State private var showAddRule = false
     @State private var editingRule: ProxyRule?
-    
+    @State private var draggedRuleId: String?
+
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Proxy Rules")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Proxy Rules")
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                    Text("Rules are evaluated from top to bottom. Drag Priority to reorder.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
                 Spacer()
-                
-                Button(action: { 
+
+                Button(action: {
                     if selectedRuleIds.count == rules.count {
                         selectedRuleIds.removeAll()
                     } else {
@@ -119,7 +125,7 @@ struct ProxyRulesView: View {
                     .padding(.vertical, 8)
                 }
                 .disabled(rules.isEmpty)
-                
+
                 Button(action: { exportSelectedRules() }) {
                     HStack {
                         Image(systemName: "square.and.arrow.up")
@@ -129,7 +135,7 @@ struct ProxyRulesView: View {
                     .padding(.vertical, 8)
                 }
                 .disabled(selectedRuleIds.isEmpty)
-                
+
                 Button(action: { importRulesFromFile() }) {
                     HStack {
                         Image(systemName: "square.and.arrow.down")
@@ -138,7 +144,7 @@ struct ProxyRulesView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                 }
-                
+
                 Button(action: { showAddRule = true }) {
                     HStack {
                         Image(systemName: "plus")
@@ -150,7 +156,7 @@ struct ProxyRulesView: View {
                 .buttonStyle(.borderedProminent)
             }
             .padding()
-            
+
             if rules.isEmpty {
                 Spacer()
                 VStack(spacing: 12) {
@@ -209,11 +215,32 @@ struct ProxyRulesView: View {
                     }
                     .width(60)
 
-                    TableColumn("SR") { rule in
+                    TableColumn("Priority") { rule in
                         let index = (rules.firstIndex(where: { $0.id == rule.id }) ?? 0) + 1
-                        Text(verbatim: "\(index)")
+                        HStack(spacing: 6) {
+                            Image(systemName: "line.3.horizontal")
+                                .foregroundColor(.secondary)
+                            Text(verbatim: "\(index)")
+                                .monospacedDigit()
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .onDrag {
+                            draggedRuleId = rule.id
+                            return NSItemProvider(object: rule.id as NSString)
+                        }
+                        .onDrop(
+                            of: [UTType.plainText],
+                            delegate: RulePriorityDropDelegate(
+                                targetRuleId: rule.id,
+                                rules: $rules,
+                                draggedRuleId: $draggedRuleId,
+                                onReorder: finishRuleReorder
+                            )
+                        )
+                        .help("Drag to change rule priority")
                     }
-                    .width(32)
+                    .width(64)
 
                     TableColumn("Name") { rule in
                         Text(rule.name.isEmpty ? "=" : rule.name)
@@ -269,7 +296,7 @@ struct ProxyRulesView: View {
             RuleEditorView(viewModel: viewModel, existingRule: rule, onCommit: { commitRule($0) })
         }
     }
-    
+
     private func binding(for rule: ProxyRule) -> Binding<Bool> {
         Binding(
             get: { rule.enabled },
@@ -278,7 +305,7 @@ struct ProxyRulesView: View {
             }
         )
     }
-    
+
     private func actionColor(_ action: String) -> Color {
         switch action {
         case "BLOCK": return .red
@@ -298,61 +325,91 @@ struct ProxyRulesView: View {
             return viewModel.proxyConfigs.first(where: { $0.id == action })?.displayName ?? action
         }
     }
-    
+
     // rules live in UserDefaults on the gui side, the extension is just a mirror
     private func loadRules() {
-        let dicts = UserDefaults.standard.array(forKey: "proxyRules") as? [[String: Any]] ?? []
+        let d = UserDefaults.standard
+        let active = viewModel.activeProfile
+        var dicts = d.array(forKey: "proxyRules") as? [[String: Any]] ?? []
+        if dicts.isEmpty {
+            dicts = d.array(forKey: "profile.\(active).proxyRules") as? [[String: Any]] ?? []
+        }
+        if dicts.isEmpty {
+            dicts = d.array(forKey: "profile.Default.proxyRules") as? [[String: Any]] ?? []
+        }
         rules = dicts.map { ProxyRule(dict: $0) }
     }
 
     // persist the current list and push it to the extension if the tunnel is up
-    private func saveAndSync() {
-        UserDefaults.standard.set(rules.map { $0.toDict() }, forKey: "proxyRules")
+    private func saveAndSync(activityMessage: String) {
+        let dicts = rules.map { $0.toDict() }
+        let d = UserDefaults.standard
+        d.set(dicts, forKey: "proxyRules")
+        let active = viewModel.activeProfile
+        d.set(dicts, forKey: "profile.\(active).proxyRules")
+        viewModel.recordActivity(activityMessage)
         if let session = viewModel.tunnelSession {
-            RuleManager.resyncRules(session: session) { _, _ in }
+            RuleManager.resyncRules(session: session) { success, _ in
+                if !success {
+                    DispatchQueue.main.async {
+                        viewModel.recordActivity("Failed to sync rules with extension", level: "ERROR")
+                    }
+                }
+            }
         }
     }
 
     func commitRule(_ rule: ProxyRule) {
         if let index = rules.firstIndex(where: { $0.localId == rule.localId }) {
             rules[index] = rule
+            saveAndSync(activityMessage: "Rule updated: \(ruleActivityName(rule))")
         } else {
             rules.append(rule)
+            saveAndSync(activityMessage: "Rule added: \(ruleActivityName(rule))")
         }
-        saveAndSync()
     }
 
     private func deleteRule(_ rule: ProxyRule) {
         rules.removeAll { $0.localId == rule.localId }
         selectedRuleIds.remove(rule.localId)
-        saveAndSync()
+        saveAndSync(activityMessage: "Rule deleted: \(ruleActivityName(rule))")
     }
 
     private func toggleRule(_ rule: ProxyRule, enabled: Bool) {
         guard let index = rules.firstIndex(where: { $0.localId == rule.localId }) else { return }
         rules[index].enabled = enabled
-        saveAndSync()
+        saveAndSync(activityMessage: "Rule \(enabled ? "enabled" : "disabled"): \(ruleActivityName(rule))")
     }
-    
+
+    private func finishRuleReorder(_ ruleId: String) {
+        guard let index = rules.firstIndex(where: { $0.id == ruleId }) else { return }
+        saveAndSync(activityMessage: "Rule priority changed: \(ruleActivityName(rules[index])) → #\(index + 1)")
+    }
+
+    private func ruleActivityName(_ rule: ProxyRule) -> String {
+        let name = rule.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "unnamed rule" : name
+    }
+
     private func getSelectedRules() -> [ProxyRule] {
         return rules.filter { selectedRuleIds.contains($0.id) }
     }
-    
+
     private func exportSelectedRules() {
         guard !selectedRuleIds.isEmpty else { return }
-        
+
         let selectedRules = getSelectedRules()
-        
+
         let savePanel = NSSavePanel()
         savePanel.title = "Export Proxy Rules"
         savePanel.message = "Choose a location to save the selected rules"
         savePanel.nameFieldStringValue = "ProxyBridge-Rules.json"
         savePanel.allowedContentTypes = [.json]
         savePanel.canCreateDirectories = true
-        
+
         let response = savePanel.runModal()
         guard response == .OK, let url = savePanel.url else { return }
-        
+
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -362,7 +419,7 @@ struct ProxyRulesView: View {
             print("Export failed: \(error)")
         }
     }
-    
+
     private func importRulesFromFile() {
         let openPanel = NSOpenPanel()
         openPanel.title = "Import Proxy Rules"
@@ -370,23 +427,54 @@ struct ProxyRulesView: View {
         openPanel.allowedContentTypes = [.json]
         openPanel.allowsMultipleSelection = false
         openPanel.canChooseDirectories = false
-        
+
         let response = openPanel.runModal()
         guard response == .OK, let url = openPanel.urls.first else { return }
-        
+
         importRules(from: url)
     }
-    
+
     private func importRules(from url: URL) {
         do {
             let data = try Data(contentsOf: url)
             let importedRules = try JSONDecoder().decode([ProxyRule].self, from: data)
             // decode drops localId so each imported rule already has a fresh one
             rules.append(contentsOf: importedRules)
-            saveAndSync()
+            saveAndSync(activityMessage: "Rules imported: \(url.lastPathComponent) (count: \(importedRules.count))")
         } catch {
             print("Failed to import rules: \(error)")
         }
+    }
+}
+
+private struct RulePriorityDropDelegate: DropDelegate {
+    let targetRuleId: String
+    @Binding var rules: [ProxyRule]
+    @Binding var draggedRuleId: String?
+    let onReorder: (String) -> Void
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let draggedRuleId,
+              draggedRuleId != targetRuleId,
+              let sourceIndex = rules.firstIndex(where: { $0.id == draggedRuleId }),
+              let targetIndex = rules.firstIndex(where: { $0.id == targetRuleId }) else {
+            self.draggedRuleId = nil
+            return false
+        }
+
+        withAnimation(.easeInOut(duration: 0.15)) {
+            rules.move(
+                fromOffsets: IndexSet(integer: sourceIndex),
+                toOffset: targetIndex > sourceIndex ? targetIndex + 1 : targetIndex
+            )
+        }
+        onReorder(draggedRuleId)
+        self.draggedRuleId = nil
+        return true
     }
 }
 
@@ -440,9 +528,9 @@ struct RuleEditorView: View {
                         label: "Process / Bundle Identifier",
                         placeholder: "*",
                         text: $processNames,
-                        hint: "Matches the bundle id or the process name. Examples: com.apple.Safari; curl; Google Chrome Helper; *chrome*; *"
+                        hint: "Matches bundle ids, process names, or exact .app names. Examples: Antigravity.app; curl; *chrome*; *"
                     )
-                    
+
                     formField(
                         label: "Target hosts",
                         placeholder: "*",
@@ -457,7 +545,7 @@ struct RuleEditorView: View {
                              : "Enable DNS is off in the Proxy menu, so host names do not match. IP addresses still work.")
                             .font(.caption).foregroundColor(.secondary)
                     }
-                    
+
                     formField(
                         label: "Target ports",
                         placeholder: "*",
@@ -488,7 +576,7 @@ struct RuleEditorView: View {
                             }
                         }
                     }
-                    
+
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Action")
                             .fontWeight(.medium)
@@ -527,7 +615,7 @@ struct RuleEditorView: View {
                 }
             }
             .formStyle(.grouped)
-            
+
             HStack {
                 Button("Cancel") {
                     dismiss()
@@ -547,7 +635,7 @@ struct RuleEditorView: View {
         .padding()
         .frame(width: 600, height: 620)
     }
-    
+
     @ViewBuilder
     private func formField(label: String, placeholder: String, text: Binding<String>, hint: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -560,7 +648,7 @@ struct RuleEditorView: View {
                 .foregroundColor(.secondary)
         }
     }
-    
+
     private func saveRule() {
         let rule = ProxyRule(
             localId: existingRule?.localId ?? UUID().uuidString,
@@ -579,13 +667,13 @@ struct RuleEditorView: View {
 
 struct RulesDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.json] }
-    
+
     var rules: [ProxyRule]
-    
+
     init(rules: [ProxyRule]) {
         self.rules = rules
     }
-    
+
     init(configuration: ReadConfiguration) throws {
         guard let data = configuration.file.regularFileContents else {
             throw CocoaError(.fileReadCorruptFile)
@@ -593,7 +681,7 @@ struct RulesDocument: FileDocument {
         let decoder = JSONDecoder()
         rules = try decoder.decode([ProxyRule].self, from: data)
     }
-    
+
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

@@ -121,7 +121,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmd, int show)
     { char buf[64]; W2Ux(L"caf\x00e9 \x4e2d", buf, sizeof buf); CHECK(!strcmp(buf, "caf\xC3\xA9 \xE4\xB8\xAD")); }
     { char buf[4]; memset(buf, 0x55, sizeof buf); W2Ux(L"this does not fit", buf, sizeof buf); CHECK(memchr(buf, 0, sizeof buf) != NULL); }   /* too small: still terminated */
     { char buf[8]; W2Ux(NULL, buf, sizeof buf); CHECK(buf[0] == 0); }
-    { wchar_t ts[16]; GetTimePrefix(ts, 16); CHECK(wcslen(ts) == 11 && ts[0] == L'[' && ts[3] == L':' && ts[6] == L':' && ts[9] == L']'); }
+    { wchar_t ts[32]; GetTimePrefix(ts, 32); CHECK(wcslen(ts) == 22 && ts[0] == L'[' && ts[5] == L'-' && ts[8] == L'-' && ts[14] == L':' && ts[17] == L':' && ts[20] == L']'); }
 
     return pbtest_done("test_gui_misc");
 }

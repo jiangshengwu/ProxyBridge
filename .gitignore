@@ -21,6 +21,7 @@ MacOS/ProxyBridge/.env
 MacOS/ProxyBridge/output/
 MacOS/ProxyBridge/build/
 MacOS/ProxyBridge/provision/**
+dist/
 
 # Signing configuration files (sensitive)
 MacOS/ProxyBridge/Signing-App.xcconfig
@@ -137,3 +138,12 @@ Windows/tests/e2e/out_service/
 
 # the end-to-end test helper is a script we ship
 !Windows/tests/e2e/*.py
+Android/**
+
+# Local Windows compiler/dependency cache and regression test output
+/.work/
+/Windows/tests/build/
+/Windows/tests/out-static/
+/Windows/output/review-build/
+/Windows/output/light-build/
+/Windows/output/

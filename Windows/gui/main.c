@@ -17,13 +17,18 @@
 #include <windowsx.h>
 #include <tlhelp32.h>
 #include <commctrl.h>
+#include <richedit.h>
 #include <commdlg.h>
 #define COBJMACROS
 #include <shobjidl.h>
+#include <shlobj.h>
 #include <dwmapi.h>
 #include <uxtheme.h>
 #include <stdio.h>
 #include <stdlib.h>
+#ifndef LM_GETIDEALSIZE
+#define LM_GETIDEALSIZE LM_GETIDEALHEIGHT
+#endif
 #include "res/resource.h"
 #include "api/pb_api.h"
 #include "api/pb_ipc.h"
@@ -40,19 +45,19 @@
 #pragma comment(lib, "dwmapi.lib")
 #pragma comment(lib, "uxtheme.lib")
 
-// dark theme
-#define C_BG      RGB(0x1E, 0x1E, 0x1E)   // window / edit background
-#define C_PANEL   RGB(0x25, 0x25, 0x26)   // strip background
-#define C_TEXT    RGB(0xD4, 0xD4, 0xD4)
-#define C_DIM     RGB(0x8A, 0x8A, 0x8A)
-#define C_TAB     RGB(0x2D, 0x2D, 0x30)   // inactive tab
-#define C_TABSEL  RGB(0x1E, 0x1E, 0x1E)   // active tab (matches content)
-#define C_TABHOT  RGB(0x3E, 0x3E, 0x42)   // hovered tab
-#define C_ACCENT  RGB(0x00, 0x7A, 0xCC)   // active-tab top strip
-#define C_MENU    RGB(0x2D, 0x2D, 0x30)
-#define C_MENUHOT RGB(0x3E, 0x3E, 0x46)
-#define C_LINE    RGB(0x3F, 0x3F, 0x46)
-#define C_WARN    RGB(0xD7, 0xA5, 0x22)   // amber hint for the UDP note
+// Light palette shared by windows, menus, dialogs and the log renderer.
+#define C_BG      RGB(255,255,255)
+#define C_PANEL   RGB(245,245,247)
+#define C_TEXT    RGB(29,29,31)
+#define C_DIM     RGB(110,110,115)
+#define C_TAB     RGB(245,245,247)
+#define C_TABSEL  RGB(255,255,255)
+#define C_TABHOT  RGB(232,239,249)
+#define C_ACCENT  RGB(0,122,255)
+#define C_MENU    RGB(245,245,247)
+#define C_MENUHOT RGB(224,235,250)
+#define C_LINE    RGB(216,216,220)
+#define C_WARN    RGB(150,100,0)
 
 static HBRUSH g_brBg, g_brPanel, g_brTab, g_brTabSel, g_brTabHot, g_brAccent, g_brMenu, g_brMenuHot;
 static int    g_tabHot = -1;   // hovered tab index (owner-draw)
@@ -86,6 +91,11 @@ typedef void (WINAPI *fnFlushMenuThemes)(void);
 static PBApi     g_api;
 static HWND      g_hMain, g_hTab, g_hConnLog, g_hActLog;
 static HWND      g_hConnSearch, g_hConnClear, g_hActSearch, g_hActClear;
+static HWND g_hQuick[6], g_hSource;
+static int g_quickCounts[6], g_quickHot = -1;
+static const wchar_t *g_quickLabels[] = {L"ALL", L"PROXIED", L"DIRECT", L"REJECT", L"TCP", L"UDP"};
+#define IDC_QUICK_BASE 3100
+#define IDC_SOURCE 3120
 static HFONT     g_hIcon;                 // Segoe MDL2 Assets glyph font for the menu-bar icons
 static HFONT     g_hMenuFont;             // menu-bar font (owner-drawn top items => taller bar)
 static RECT      g_rcTbSet, g_rcTbRules;  // menu-bar icon hit-rects (window-relative)
@@ -105,6 +115,8 @@ typedef struct {
     wchar_t* lines[LOG_MAX_LINES];
     int      count;
     wchar_t  filter[128];
+    int routeFilter, protoFilter, sourceFilter;
+    BOOL viewDirty, rebuilding;
     wchar_t* pend[LOG_PEND_MAX];   // queued by native callback threads, drained by the UI timer
     int      pendCount;
     CRITICAL_SECTION lock;
@@ -126,6 +138,8 @@ static BOOL      g_trayAdded = FALSE;
 static UINT      g_wmTaskbarCreated = 0;   // shell broadcast when the taskbar reappear
 static BOOL      g_reallyExit = FALSE;
 static BOOL      g_started = FALSE;
+static SRWLOCK g_callbackGate;
+static BOOL g_acceptLogs = FALSE;
 
 static PBProfile g_profile;
 static wchar_t   g_activeProfile[PB_NAME_MAX] = L"Default";
@@ -135,7 +149,7 @@ static BOOL      g_startup = FALSE;   // "Run at Startup" (schtasks logon task)
 static BOOL      g_logEvery = FALSE;   // log every new connection (no de-duplication); saved per profile
 static BOOL      g_autoClear = TRUE;  // auto-clear logs past a line threshold to save memory
 #define AUTO_CLEAR_LINES 500
-static PBFilter  g_flt[PB_MAX_FILTER];  // connection-log filter snapshot (read by native cb)
+static PBFilter  g_flt[PB_MAX_FILTER];  // connection-log filter snapshot (UI thread only)
 static int       g_fltCount = 0;
 
 static wchar_t   g_profNames[64][PB_NAME_MAX];
@@ -193,33 +207,23 @@ INT_PTR CALLBACK NameDlgProc(HWND, UINT, WPARAM, LPARAM);
 INT_PTR CALLBACK AboutDlgProc(HWND, UINT, WPARAM, LPARAM);
 
 // DLL callbacks (native thread)
-static void PBLogCb(const char* message)
+static void PBLogBody(const char* message)
 {
     if (!g_hMain) return;
     wchar_t* body = U2Wdup(message);
     if (!body) return;
-    wchar_t ts[16]; GetTimePrefix(ts, 16);
-    size_t n = wcslen(ts) + wcslen(body) + 3;
+    wchar_t ts[32]; GetTimePrefix(ts, 32);
+    size_t n = wcslen(ts) + wcslen(body) + 16;
     wchar_t* line = (wchar_t*)malloc(n * sizeof(wchar_t));
-    if (line) { _snwprintf_s(line, n, _TRUNCATE, L"%s%s\r\n", ts, body); LogStoreQueue(&g_actStore, line); }
+    if (line) { _snwprintf_s(line, n, _TRUNCATE, L"%s[CORE] %s\r\n", ts, body); LogStoreQueue(&g_actStore, line); }
     free(body);
 }
 
-static void PBConnCb(const char* proc, DWORD pid, const char* ip, unsigned short port, const char* info)
+static void PBConnBody(const char* proc, DWORD pid, const char* ip, unsigned short port, const char* info)
 {
     if (!g_hMain || !g_trafficLog) return;
     wchar_t *wp = U2Wdup(proc), *wi = U2Wdup(ip), *wf = U2Wdup(info);
-    // Connection-log filters: derive protocol/action from the proxy_info and drop non-matches.
-    if (g_fltCount > 0)
-    {
-        wchar_t wport[16]; _snwprintf_s(wport, 16, _TRUNCATE, L"%u", port);
-        const wchar_t* proto  = (info && strstr(info, "(UDP)")) ? L"UDP" : L"TCP";
-        const wchar_t* action = (info && _strnicmp(info, "Direct", 6) == 0) ? L"Direct"
-                              : (info && _strnicmp(info, "Block",  5) == 0) ? L"Blocked" : L"Proxy";
-        if (!PassesLogFilters(wp ? wp : L"", wi ? wi : L"", wport, proto, action))
-        { free(wp); free(wi); free(wf); return; }
-    }
-    wchar_t ts[16]; GetTimePrefix(ts, 16);
+    wchar_t ts[32]; GetTimePrefix(ts, 32);
     size_t n = 64 + (wp ? wcslen(wp) : 0) + (wi ? wcslen(wi) : 0) + (wf ? wcslen(wf) : 0);
     wchar_t* line = (wchar_t*)malloc(n * sizeof(wchar_t));
     if (line)
@@ -229,6 +233,20 @@ static void PBConnCb(const char* proc, DWORD pid, const char* ip, unsigned short
         LogStoreQueue(&g_connStore, line);
     }
     free(wp); free(wi); free(wf);
+}
+
+// Wait for callbacks in flight before releasing log storage on window destruction.
+static void PBLogCb(const char* message)
+{
+    AcquireSRWLockShared(&g_callbackGate);
+    if (g_acceptLogs) PBLogBody(message);
+    ReleaseSRWLockShared(&g_callbackGate);
+}
+static void PBConnCb(const char* proc, DWORD pid, const char* ip, unsigned short port, const char* info)
+{
+    AcquireSRWLockShared(&g_callbackGate);
+    if (g_acceptLogs) PBConnBody(proc, pid, ip, port, info);
+    ReleaseSRWLockShared(&g_callbackGate);
 }
 
 // profile apply / persist
@@ -282,6 +300,7 @@ static void ApplyRules(void)
         r->nativeId = g_api.AddRule(s->proc, s->ips, s->ports, s->doms,
                                     (PBRuleProtocol)ProtoIdx(r->proto), (PBRuleAction)ActionIdx(r->action),
                                     ResolveNativeCfg(r->cfgStoredId), r->localhost != 0);
+        if (g_api.SetRuleName) { char name[384]; W2Ux(r->name, name, sizeof(name)); g_api.SetRuleName(r->nativeId, name); }
         if (r->nativeId && !r->enabled) g_api.DisableRule(r->nativeId);
         free(s);
     }
@@ -295,6 +314,7 @@ static UINT32 EngineAddRule(PBRule* r)
     UINT32 id = g_api.AddRule(s->proc, s->ips, s->ports, s->doms,
                               (PBRuleProtocol)ProtoIdx(r->proto), (PBRuleAction)ActionIdx(r->action),
                               ResolveNativeCfg(r->cfgStoredId), r->localhost != 0);
+    if (g_api.SetRuleName) { char name[384]; W2Ux(r->name, name, sizeof(name)); g_api.SetRuleName(id, name); }
     if (id && !r->enabled) g_api.DisableRule(id);
     free(s);
     return id;
@@ -307,6 +327,7 @@ static void EngineEditRule(PBRule* r)
     g_api.EditRule(r->nativeId, s->proc, s->ips, s->ports, s->doms,
                    (PBRuleProtocol)ProtoIdx(r->proto), (PBRuleAction)ActionIdx(r->action),
                    ResolveNativeCfg(r->cfgStoredId), r->localhost != 0);
+    if (g_api.SetRuleName) { char name[384]; W2Ux(r->name, name, sizeof(name)); g_api.SetRuleName(r->nativeId, name); }
     if (r->enabled) g_api.EnableRule(r->nativeId); else g_api.DisableRule(r->nativeId);
     free(s);
 }
@@ -512,6 +533,12 @@ static void ApplyZoom(HWND hwnd)
     SendMessageW(g_hActSearch,  WM_SETFONT, (WPARAM)g_hUi,   TRUE);
     SendMessageW(g_hConnClear,  WM_SETFONT, (WPARAM)g_hUi,   TRUE);
     SendMessageW(g_hActClear,   WM_SETFONT, (WPARAM)g_hUi,   TRUE);
+    for (int i = 0; i < 6; i++) SendMessageW(g_hQuick[i], WM_SETFONT, (WPARAM)g_hUi, TRUE);
+    SendMessageW(g_hSource, WM_SETFONT, (WPARAM)g_hUi, TRUE);
+    CHARFORMAT2W format = {0}; format.cbSize = sizeof(format);
+    format.dwMask = CFM_SIZE; format.yHeight = MulDiv(240, g_zoom, 100);
+    SendMessageW(g_hConnLog, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&format);
+    SendMessageW(g_hActLog, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&format);
     if (oUi)   DeleteObject(oUi);
     if (oMono) DeleteObject(oMono);
     if (oIcon) DeleteObject(oIcon);
@@ -561,7 +588,14 @@ static void LayoutMain(HWND hwnd)
     int top = tabTop + tabH + Sc(6);
     int barH = Sc(30), clearW = Sc(130), gap = Sc(6);
     int searchW = rc.right - 4 - clearW - gap - 4;
-    int logTop = top + barH + 4;
+    int columns = (rc.right - Sc(2)) / Sc(154);
+    if (columns < 1) columns = 1;
+    if (columns > 6) columns = 6;
+    int rows = (6 + columns - 1) / columns;
+    int logTop = top + barH + rows * Sc(32) + Sc(4);
+    for (int i = 0; i < 6; i++)
+        MoveWindow(g_hQuick[i], Sc(4) + (i % columns) * Sc(154), top + barH + (i / columns) * Sc(32), Sc(148), Sc(28), TRUE);
+    MoveWindow(g_hSource, Sc(4), top + barH, Sc(210), Sc(160), TRUE);
     int logH = rc.bottom - logTop - 4; if (logH < 0) logH = 0;
     // search box + Clear button row, then the log below (both tabs share the same rect)
     MoveWindow(g_hConnSearch, 4, top, searchW, barH - 6, TRUE);
@@ -580,6 +614,8 @@ static void SelectTab(int idx)
     int f = (idx == 2) ? SW_SHOW : SW_HIDE;
     ShowWindow(g_hFlows, f); ShowWindow(g_hFlowsClear, f);
     FlowsActivate(g_hMain, idx == 2);
+    for (int i = 0; i < 6; i++) ShowWindow(g_hQuick[i], c);
+    ShowWindow(g_hSource, a);
     ShowWindow(g_hConnLog, c); ShowWindow(g_hConnSearch, c); ShowWindow(g_hConnClear, c);
     ShowWindow(g_hActLog,  a); ShowWindow(g_hActSearch,  a); ShowWindow(g_hActClear,  a);
 }
@@ -612,12 +648,12 @@ static BOOL PickFile(HWND owner, BOOL save, wchar_t* path, int cch)
     return save ? GetSaveFileNameW(&ofn) : GetOpenFileNameW(&ofn);
 }
 
-// dark theme helpers (split out)
+// light theme helpers (split out)
 #include "ui/theme.h"
 // update checker (split out)
 #include "ui/update.h"
 
-// Fully paints the (non-client, owner-drawn) menu bar dark: fills the bar, redraws each
+// Paint the non-client menu bar with the shared palette: fill the bar, redraw each
 // top-item label, and draws the two quick-access glyph icons right after the last item.
 // Records the icon rects for hit-testing. Called on WM_NCPAINT / WM_NCACTIVATE / WM_SIZE.
 static void DrawMenuBar2(HWND hwnd)
@@ -632,7 +668,7 @@ static void DrawMenuBar2(HWND hwnd)
     if (barH <= 0) return;
 
     HDC dc = GetWindowDC(hwnd);
-    FillRect(dc, &br, g_brMenu);                       // whole bar dark
+    FillRect(dc, &br, g_brMenu);
 
     HFONT of = (HFONT)SelectObject(dc, g_hMenuFont);
     SetBkMode(dc, TRANSPARENT);
@@ -692,13 +728,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         SendMessageW(g_hFlows, WM_SETFONT, (WPARAM)g_hUi, TRUE);
     SendMessageW(g_hFlowsClear, WM_SETFONT, (WPARAM)g_hUi, TRUE);
 
+        if (!LoadLibraryExW(L"Msftedit.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32)) return -1;
         DWORD es = WS_CHILD | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_BORDER;
-        g_hConnLog = CreateWindowExW(0, L"EDIT", NULL, es | WS_VISIBLE, 0, 0, 0, 0, hwnd, NULL, g_hInst, NULL);
-        g_hActLog  = CreateWindowExW(0, L"EDIT", NULL, es,               0, 0, 0, 0, hwnd, NULL, g_hInst, NULL);
+        g_hConnLog = CreateWindowExW(0, MSFTEDIT_CLASS, NULL, es | WS_VISIBLE, 0, 0, 0, 0, hwnd, NULL, g_hInst, NULL);
+        g_hActLog  = CreateWindowExW(0, MSFTEDIT_CLASS, NULL, es,               0, 0, 0, 0, hwnd, NULL, g_hInst, NULL);
+        if (!g_hConnLog || !g_hActLog) return -1;
+        SendMessageW(g_hConnLog, EM_SETBKGNDCOLOR, 0, C_BG);
+        SendMessageW(g_hActLog, EM_SETBKGNDCOLOR, 0, C_BG);
+        SendMessageW(g_hConnLog, EM_SETUNDOLIMIT, 0, 0);
+        SendMessageW(g_hActLog, EM_SETUNDOLIMIT, 0, 0);
         SendMessageW(g_hConnLog, WM_SETFONT, (WPARAM)g_hMono, TRUE);
         SendMessageW(g_hActLog,  WM_SETFONT, (WPARAM)g_hMono, TRUE);
-        SendMessageW(g_hConnLog, EM_SETLIMITTEXT, MAX_LOG_CHARS * 2, 0);
-        SendMessageW(g_hActLog,  EM_SETLIMITTEXT, MAX_LOG_CHARS * 2, 0);
+        SendMessageW(g_hConnLog, EM_EXLIMITTEXT, 0, MAX_LOG_CHARS * 2);
+        SendMessageW(g_hActLog,  EM_EXLIMITTEXT, 0, MAX_LOG_CHARS * 2);
 
         // Per-tab search box + Clear button, one set per log.
         DWORD ss = WS_CHILD | ES_AUTOHSCROLL;
@@ -716,6 +758,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         SetWindowSubclass(g_hActLog,     ZoomSubclass, 1, (DWORD_PTR)hwnd);
         SetWindowSubclass(g_hConnSearch, ZoomSubclass, 1, (DWORD_PTR)hwnd);
         SetWindowSubclass(g_hActSearch,  ZoomSubclass, 1, (DWORD_PTR)hwnd);
+        for (int i = 0; i < 6; i++) {
+            g_hQuick[i] = CreateWindowExW(0, L"BUTTON", g_quickLabels[i], WS_CHILD | WS_TABSTOP | BS_OWNERDRAW,
+                0,0,0,0, hwnd, (HMENU)(INT_PTR)(IDC_QUICK_BASE+i), g_hInst, NULL);
+            SendMessageW(g_hQuick[i], WM_SETFONT, (WPARAM)g_hUi, TRUE);
+            SetWindowSubclass(g_hQuick[i], QuickFilterSubProc, 9, (DWORD_PTR)i);
+        }
+        g_hSource = CreateWindowExW(0, L"COMBOBOX", NULL, WS_CHILD | WS_TABSTOP | CBS_DROPDOWNLIST,
+            0,0,0,0, hwnd, (HMENU)IDC_SOURCE, g_hInst, NULL);
+        SendMessageW(g_hSource, WM_SETFONT, (WPARAM)g_hUi, TRUE);
+        SendMessageW(g_hSource, CB_ADDSTRING, 0, (LPARAM)L"ALL SOURCES");
+        SendMessageW(g_hSource, CB_ADDSTRING, 0, (LPARAM)L"GUI");
+        SendMessageW(g_hSource, CB_ADDSTRING, 0, (LPARAM)L"CORE");
+        SendMessageW(g_hSource, CB_SETCURSEL, 0, 0);
         LogStoreInit(&g_connStore, g_hConnLog);
         LogStoreInit(&g_actStore,  g_hActLog);
         SetTimer(hwnd, TIMER_LOG, 200, NULL);   // batch log updates ~5x/sec
@@ -727,15 +782,14 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0))
             g_hMenuFont = CreateFontIndirectW(&ncm.lfMenuFont);
 
-        // Dark theme: elevate to immersive dark mode, dark scrollbars on the log edits,
-        // and hover tracking for the owner-drawn tabs.
-        InitDarkMode(hwnd);
-        SetWindowTheme(g_hConnLog, L"DarkMode_Explorer", NULL);
-        SetWindowTheme(g_hActLog,  L"DarkMode_Explorer", NULL);
-        SetWindowTheme(g_hTab,     L"DarkMode_Explorer", NULL);
+        // Light native controls and hover tracking for owner-drawn tabs.
+        InitLightTheme(hwnd);
+        SetWindowTheme(g_hConnLog, L"Explorer", NULL);
+        SetWindowTheme(g_hActLog,  L"Explorer", NULL);
+        SetWindowTheme(g_hTab,     L"Explorer", NULL);
         SetWindowSubclass(g_hTab, TabSubProc, 1, 0);
 
-        LayoutMain(hwnd); SelectTab(0);
+        LayoutMain(hwnd); SelectTab(0); UpdateQuickFilters();
         return 0;
     }
     case WM_SIZE:  LayoutMain(hwnd); DrawMenuBar2(hwnd); return 0;
@@ -780,6 +834,9 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_DRAWITEM:
     {
         LPDRAWITEMSTRUCT d = (LPDRAWITEMSTRUCT)lp;
+        if (d->CtlType == ODT_BUTTON && d->CtlID >= IDC_QUICK_BASE && d->CtlID < IDC_QUICK_BASE + 6) {
+            DrawQuickFilter(d); return TRUE;
+        }
         if (d->CtlType == ODT_MENU)   // hover state while a top menu is highlighted
         {
             const wchar_t* txt = (const wchar_t*)d->itemData;
@@ -883,6 +940,16 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (wp == TIMER_LOG)
         {
             int processed = LogStoreFlush(&g_connStore) + LogStoreFlush(&g_actStore);
+            if (processed) UpdateQuickFilters();
+            static int healthTicks = 0;
+            static BOOL unhealthy = FALSE;
+            if (++healthTicks >= 75) {
+                healthTicks = 0;
+                BOOL failed = g_started && g_api.IsHealthy && !g_api.IsHealthy();
+                if (failed && !unhealthy) GuiLog(L"Engine worker stopped. Restart ProxyBridge to recover.");
+                if (!failed && unhealthy && g_started) GuiLog(L"Engine health restored.");
+                unhealthy = failed;
+            }
             // When traffic has been idle for a couple of seconds, hand freed pages back to the
             // OS so memory drops after a burst instead of staying pinned in the working set.
             if (processed == 0) { if (++g_idleTicks == 10) SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1); }
@@ -922,6 +989,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_COMMAND:
     {
+        int quick = LOWORD(wp) - IDC_QUICK_BASE;
+        if (quick >= 0 && quick < 6 && HIWORD(wp) == BN_CLICKED) {
+            if (quick == 0) g_connStore.routeFilter = g_connStore.protoFilter = 0;
+            else if (quick < 4) g_connStore.routeFilter = g_connStore.routeFilter == quick ? 0 : quick;
+            else g_connStore.protoFilter = g_connStore.protoFilter == quick - 3 ? 0 : quick - 3;
+            LogStoreRebuild(&g_connStore); UpdateQuickFilters(); return 0;
+        }
+        if (LOWORD(wp) == IDC_SOURCE && HIWORD(wp) == CBN_SELCHANGE) {
+            g_actStore.sourceFilter = (int)SendMessageW(g_hSource, CB_GETCURSEL, 0, 0);
+            LogStoreRebuild(&g_actStore); return 0;
+        }
+
         WORD id = LOWORD(wp);
         if (id >= IDM_PROFILE_SWITCH_BASE && id < IDM_PROFILE_SWITCH_BASE + g_profCount)
         {
@@ -962,7 +1041,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (DialogBoxW(g_hInst, MAKEINTRESOURCEW(IDD_FILTERS), hwnd, FiltersDlgProc))
             {
                 ApplyFilterSnapshot(); SaveActive();
-                LogStoreClear(&g_connStore);   // re-populate under the new filter set
+                LogStoreRebuild(&g_connStore); // retain history when changing filters
             }
             return 0;
         case IDM_PROFILE_RENAME:
@@ -1051,6 +1130,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         DestroyWindow(hwnd);
         return 0;
     case WM_DESTROY:
+        AcquireSRWLockExclusive(&g_callbackGate);
+        g_acceptLogs = FALSE;
+        ReleaseSRWLockExclusive(&g_callbackGate);
+        if (g_api.SetConnectionCallback) g_api.SetConnectionCallback(NULL);
+        if (g_api.SetLogCallback) g_api.SetLogCallback(NULL);
         if (g_api.Stop) g_api.Stop();
         TrayRemove();
         KillTimer(hwnd, TIMER_LOG);
@@ -1178,7 +1262,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmd, int show)
     g_startup     = StartupIsEnabled();
     ApplyFilterSnapshot();
 
-    CreateDarkBrushes();   // needed for the window class background below
+    CreateThemeBrushes();   // needed for the window class background below
 
     WNDCLASSEXW wc; ZeroMemory(&wc, sizeof(wc));
     wc.cbSize = sizeof(wc);
@@ -1235,12 +1319,13 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmd, int show)
     g_api.SetTrafficLoggingEnabled(g_trafficLog);
     g_api.SetLogEveryConnection(g_logEvery);
     g_api.SetEnabled(g_proxyEnabled);
+    g_acceptLogs = TRUE;
     g_api.SetLogCallback(PBLogCb);
     g_api.SetConnectionCallback(PBConnCb);
     ApplyConfigs();
     g_started = g_api.Start();
-    if (g_started) { ApplyRules(); LogStoreAdd(&g_actStore, T(S_STARTED)); }
-    else LogStoreAdd(&g_actStore, T(S_STARTFAIL));
+    if (g_started) { ApplyRules(); GuiLog(T(S_STARTED)); }
+    else GuiLog(T(S_STARTFAIL));
 
     if (startMinimized) ShowWindow(g_hMain, SW_HIDE);   // launched by the logon task
     else { ShowWindow(g_hMain, show); UpdateWindow(g_hMain); }

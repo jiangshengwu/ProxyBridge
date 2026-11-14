@@ -38,7 +38,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmd, int show)
     (void)hPrev; (void)cmd; (void)show;
     setvbuf(stdout, NULL, _IONBF, 0);
     g_hInst = hInst;
-    CreateDarkBrushes();                                       /* the same brushes the real app creates at startup */
+    CreateThemeBrushes();                                       /* the same brushes the real app creates at startup */
     wchar_t tmp[MAX_PATH]; GetTempPathW(MAX_PATH, tmp);
     wchar_t sub[64]; _snwprintf_s(sub, 64, _TRUNCATE, L"pbtest_rulesui_%lu", GetCurrentProcessId()); wcscat_s(tmp, MAX_PATH, sub);
     CreateDirectoryW(tmp, NULL); SetEnvironmentVariableW(L"APPDATA", tmp);   /* SaveActive() writes the profile here */

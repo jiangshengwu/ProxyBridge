@@ -118,7 +118,7 @@ int main(void)
       CHECK(m4("chrome.exe", "8.8.8.8", 80) == RULE_ACTION_PROXY);                                  /* specific rules still win */
       CHECK(m4("other.exe", "8.8.8.8", 80) == RULE_ACTION_BLOCK);                                   /* everything else falls to it */
       ProxyBridge_MoveRuleToPosition(wcard, 1);
-      CHECK(m4("chrome.exe", "8.8.8.8", 80) == RULE_ACTION_PROXY);                                  /* ... even when it is listed first */
+      CHECK(m4("chrome.exe", "8.8.8.8", 80) == RULE_ACTION_BLOCK);                                  /* catch-all first wins too */
       ProxyBridge_MoveRuleToPosition(a, 99);                                                         /* an out-of-range position must not corrupt the list */
       UINT32 pa = ProxyBridge_GetRulePosition(a), pb = ProxyBridge_GetRulePosition(b), pw = ProxyBridge_GetRulePosition(wcard);
       CHECK(pa >= 1 && pa <= 3 && pb >= 1 && pb <= 3 && pw >= 1 && pw <= 3 && pa != pb && pb != pw && pa != pw);

@@ -21,7 +21,7 @@
 typedef struct {
     UINT32  storedId;              // Id as written in the profile
     UINT32  nativeId;              // id returned by AddProxyConfig after apply
-    wchar_t name[128];            // friendly label (GUI-only; not sent to the core)
+    wchar_t name[128];            // friendly proxy label
     wchar_t type[16];             // "SOCKS5" | "HTTP"
     wchar_t host[128];
     wchar_t port[16];
@@ -32,7 +32,7 @@ typedef struct {
 
 typedef struct {
     UINT32  nativeId;              // id returned by AddRule after apply
-    wchar_t name[128];            // friendly label (GUI-only; not sent to the core)
+    wchar_t name[128];            // copied to the core for rule-origin logging
     wchar_t proc[PB_APPS_MAX];
     wchar_t hosts[PB_HOSTS_MAX];  // IPs, ranges and domain names together ("*" = any host)
     wchar_t ports[128];

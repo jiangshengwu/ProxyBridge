@@ -8,21 +8,10 @@
 static void GetTimePrefix(wchar_t* buf, int cch)
 {
     SYSTEMTIME st; GetLocalTime(&st);
-    _snwprintf_s(buf, cch, _TRUNCATE, L"[%02d:%02d:%02d] ", st.wHour, st.wMinute, st.wSecond);
+    _snwprintf_s(buf, cch, _TRUNCATE, L"[%04d-%02d-%02d %02d:%02d:%02d] ", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
 }
 
-static void AppendToEdit(HWND edit, const wchar_t* line)
-{
-    int len = GetWindowTextLengthW(edit);
-    if (len > MAX_LOG_CHARS)
-    {
-        SendMessageW(edit, EM_SETSEL, 0, len / 2);
-        SendMessageW(edit, EM_REPLACESEL, FALSE, (LPARAM)L"");
-        len = GetWindowTextLengthW(edit);
-    }
-    SendMessageW(edit, EM_SETSEL, len, len);
-    SendMessageW(edit, EM_REPLACESEL, FALSE, (LPARAM)line);
-}
+#include "logstyle.h"
 
 // Case-insensitive substring test (avoids a shlwapi dependency).
 static BOOL ContainsCI(const wchar_t* hay, const wchar_t* needle)
@@ -33,10 +22,7 @@ static BOOL ContainsCI(const wchar_t* hay, const wchar_t* needle)
         if (_wcsnicmp(p, needle, nl) == 0) return TRUE;
     return FALSE;
 }
-static BOOL LogLineMatches(const LogStore* s, const wchar_t* line)
-{
-    return s->filter[0] ? ContainsCI(line, s->filter) : TRUE;
-}
+static BOOL LogLineMatches(const LogStore* s, const wchar_t* line);
 
 // connection-log filters (include/exclude rules)
 static const wchar_t* StrStrCI(const wchar_t* hay, const wchar_t* needle, size_t nlen)
@@ -95,13 +81,72 @@ static BOOL PassesLogFilters(const wchar_t* proc, const wchar_t* ip, const wchar
         { hasInc = TRUE; if (FilterRuleMatches(&g_flt[i], proc, ip, port, proto, action)) return TRUE; }
     return !hasInc;
 }
+// Decode only the fixed connection prefix; user labels live after "via".
+static BOOL ConnectionFields(const wchar_t *line, wchar_t *proc, wchar_t *ip, wchar_t *port,
+                             const wchar_t **proto, const wchar_t **action)
+{
+    const wchar_t *begin = wcsstr(line, L"] ");
+    const wchar_t *pid = wcsstr(line, L" (PID:");
+    const wchar_t *dest = wcsstr(line, L") -> ");
+    const wchar_t *via = wcsstr(line, L"  via ");
+    if (!begin || !pid || !dest || !via || pid < begin + 2 || via < dest + 5) return FALSE;
+    if (pid - begin - 2 >= 260) return FALSE;
+    wcsncpy_s(proc, 260, begin + 2, (size_t)(pid - begin - 2));
+    dest += 5;
+    const wchar_t *colon = via;
+    while (colon > dest && colon[-1] != L':') --colon;
+    if (colon <= dest || colon - dest - 1 >= 128 || via - colon >= 16) return FALSE;
+    wcsncpy_s(ip, 128, dest, (size_t)(colon - dest - 1));
+    wcsncpy_s(port, 16, colon, (size_t)(via - colon));
+    via += 6;
+    const wchar_t *status = wcsstr(via, L" | status=");
+    const wchar_t *udp = wcsstr(via, L"(UDP)");
+    *proto = udp && (!status || udp < status) ? L"UDP" : L"TCP";
+    *action = !_wcsnicmp(via, L"Direct", 6) ? L"Direct" :
+              (!_wcsnicmp(via, L"Block", 5) || (status && !wcsncmp(status, L" | status=REJECTED |", 19))) ? L"Blocked" : L"Proxy";
+    return TRUE;
+}
+
+static BOOL LogLineMatches(const LogStore* s, const wchar_t* line)
+{
+    if (s->filter[0] && !ContainsCI(line, s->filter)) return FALSE;
+    if (s == &g_actStore) {
+        return !s->sourceFilter || ContainsCI(line, s->sourceFilter == 1 ? L"[GUI]" : L"[CORE]");
+    }
+    wchar_t proc[260], ip[128], port[16]; const wchar_t *proto, *action;
+    if (!ConnectionFields(line, proc, ip, port, &proto, &action)) return TRUE;
+    if (s->protoFilter && _wcsicmp(proto, s->protoFilter == 1 ? L"TCP" : L"UDP")) return FALSE;
+    if (s->routeFilter && _wcsicmp(action, s->routeFilter == 1 ? L"Proxy" : s->routeFilter == 2 ? L"Direct" : L"Blocked")) return FALSE;
+    return PassesLogFilters(proc, ip, port, proto, action);
+}
+
+static void UpdateQuickFilters(void)
+{
+    int counts[6] = {g_connStore.count,0,0,0,0,0};
+    for (int i = 0; i < g_connStore.count; i++) {
+        wchar_t proc[260], ip[128], port[16]; const wchar_t *proto, *action;
+        if (ConnectionFields(g_connStore.lines[i], proc, ip, port, &proto, &action)) {
+            counts[!_wcsicmp(action,L"Proxy") ? 1 : !_wcsicmp(action,L"Direct") ? 2 : 3]++;
+            counts[!_wcsicmp(proto,L"TCP") ? 4 : 5]++;
+        }
+    }
+    for (int i = 0; i < 6; i++) {
+        wchar_t label[48]; _snwprintf_s(label, 48, _TRUNCATE, L"%s (%d)", g_quickLabels[i], counts[i]);
+        SetWindowTextW(g_hQuick[i], label);
+        g_quickCounts[i] = counts[i];
+        InvalidateRect(g_hQuick[i], NULL, FALSE);
+    }
+}
+
 static void ApplyFilterSnapshot(void)
 {
     g_fltCount = g_profile.filterCount;
     for (int i = 0; i < g_fltCount; i++) g_flt[i] = g_profile.filter[i];
 }
+static void LogStoreRebuild(LogStore* s);
 static void LogStoreAdd(LogStore* s, const wchar_t* line)
 {
+    BOOL follow = LogIsAtBottom(s->edit);
     wchar_t* copy = _wcsdup(line);
     if (!copy) return;
     if (s->count >= LOG_MAX_LINES)                  // drop the oldest to stay bounded
@@ -111,9 +156,11 @@ static void LogStoreAdd(LogStore* s, const wchar_t* line)
         s->count--;
     }
     s->lines[s->count++] = copy;
-    if (LogLineMatches(s, line)) AppendToEdit(s->edit, line);
+    if (!follow) s->viewDirty = TRUE;
+    else if (s->viewDirty) LogStoreRebuild(s);
+    else if (LogLineMatches(s, line)) AppendToEdit(s->edit, line);
     // Auto Clear: once a log grows past the threshold, wipe it to keep memory bounded.
-    if (g_autoClear && s->count > AUTO_CLEAR_LINES)
+    if (follow && g_autoClear && s->count > AUTO_CLEAR_LINES)
     {
         for (int i = 0; i < s->count; i++) free(s->lines[i]);
         s->count = 0;
@@ -122,9 +169,12 @@ static void LogStoreAdd(LogStore* s, const wchar_t* line)
 }
 static void LogStoreRebuild(LogStore* s)          // re-render the edit for the current filter
 {
+    s->rebuilding = TRUE;
     SetWindowTextW(s->edit, L"");
     for (int i = 0; i < s->count; i++)
         if (LogLineMatches(s, s->lines[i])) AppendToEdit(s->edit, s->lines[i]);
+    s->viewDirty = FALSE;
+    s->rebuilding = FALSE;
 }
 static void LogStoreClear(LogStore* s)
 {
@@ -135,6 +185,8 @@ static void LogStoreClear(LogStore* s)
     s->pendCount = 0;
     LeaveCriticalSection(&s->lock);
     SetWindowTextW(s->edit, L"");
+    s->viewDirty = FALSE;
+    if (s == &g_connStore) UpdateQuickFilters();
 }
 // logs add approx 40 60% memory usage on load as proxybridge use pacekt not connections, too much overload
 // thanks to claude 4.8 ops flagging and fixing it - memory usage reduced:
@@ -143,10 +195,26 @@ static void LogStoreClear(LogStore* s)
 // approx 97% memory usage reduced, thanks to claude 4.8 ops
 // CPU usage is now based on usage instead of constantly increasing on load
 // batched pipeline: callbacks queue lines; the UI timer flushes them in one go
+// A paused view stays unchanged while the bounded history continues receiving events.
+// Returning to its bottom catches up immediately, without waiting for another event.
+static LRESULT CALLBACK LogScrollSubProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp, UINT_PTR id, DWORD_PTR ref)
+{
+    LogStore *s = (LogStore*)ref;
+    if (message == WM_NCDESTROY) RemoveWindowSubclass(hwnd, LogScrollSubProc, id);
+    LRESULT result = DefSubclassProc(hwnd, message, wp, lp);
+    if (message == WM_VSCROLL || message == WM_MOUSEWHEEL || message == WM_KEYDOWN ||
+        message == WM_KEYUP || message == WM_LBUTTONUP || message == WM_SIZE) {
+        if (!s->rebuilding && s->viewDirty && LogIsAtBottom(hwnd)) LogStoreRebuild(s);
+    }
+    return result;
+}
+
 static void LogStoreInit(LogStore* s, HWND edit)
 {
     s->edit = edit;
+    s->viewDirty = s->rebuilding = FALSE;
     InitializeCriticalSection(&s->lock);
+    SetWindowSubclass(edit, LogScrollSubProc, 8, (DWORD_PTR)s);
 }
 // Native callback thread: takes ownership of `line`. Bounded - drops on overload so a burst
 // of connections (e.g. a speed test) can't balloon memory or back up a message queue.
@@ -158,10 +226,20 @@ static void LogStoreQueue(LogStore* s, wchar_t* line)
     LeaveCriticalSection(&s->lock);
     if (line) free(line);   // queue full → drop
 }
+static void GuiLog(const wchar_t *message)
+{
+    wchar_t *line = (wchar_t*)malloc((wcslen(message) + 64) * sizeof(wchar_t));
+    if (!line) return;
+    wchar_t ts[32]; GetTimePrefix(ts, 32);
+    _snwprintf_s(line, wcslen(message) + 64, _TRUNCATE, L"%s[GUI] %s\r\n", ts, message);
+    LogStoreQueue(&g_actStore, line);
+}
+
 // UI thread (timer): drain the queue, store the lines, and append the matching ones to the
 // edit in a SINGLE operation. Returns how many lines were processed.
 static int LogStoreFlush(LogStore* s)
 {
+    BOOL follow = LogIsAtBottom(s->edit);
     static wchar_t* local[LOG_PEND_MAX];   // UI-thread only
     EnterCriticalSection(&s->lock);
     int n = s->pendCount;
@@ -172,7 +250,7 @@ static int LogStoreFlush(LogStore* s)
 
     size_t total = 0;
     for (int i = 0; i < n; i++) if (LogLineMatches(s, local[i])) total += wcslen(local[i]);
-    wchar_t* batch = total ? (wchar_t*)malloc((total + 1) * sizeof(wchar_t)) : NULL;
+    wchar_t* batch = total && follow && !s->viewDirty ? (wchar_t*)malloc((total + 1) * sizeof(wchar_t)) : NULL;
     size_t off = 0;
     for (int i = 0; i < n; i++)
     {
@@ -187,8 +265,10 @@ static int LogStoreFlush(LogStore* s)
         if (batch && LogLineMatches(s, line)) { size_t l = wcslen(line); memcpy(batch + off, line, l * sizeof(wchar_t)); off += l; }
     }
     if (batch) { batch[off] = 0; AppendToEdit(s->edit, batch); free(batch); }
+    if (!follow) s->viewDirty = TRUE;
+    else if (s->viewDirty) LogStoreRebuild(s);
 
-    if (g_autoClear && s->count > AUTO_CLEAR_LINES)
+    if (follow && g_autoClear && s->count > AUTO_CLEAR_LINES)
     {
         for (int i = 0; i < s->count; i++) free(s->lines[i]);
         s->count = 0;
@@ -198,6 +278,7 @@ static int LogStoreFlush(LogStore* s)
 }
 static void LogStoreFree(LogStore* s)
 {
+    RemoveWindowSubclass(s->edit, LogScrollSubProc, 8);
     for (int i = 0; i < s->count; i++) free(s->lines[i]);
     s->count = 0;
     EnterCriticalSection(&s->lock);

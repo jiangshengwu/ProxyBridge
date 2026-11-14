@@ -385,11 +385,11 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = ProxyBridge/ProxyBridge.entitlements;
+				CODE_SIGN_ENTITLEMENTS = ProxyBridge/ProxyBridgeRelease.entitlements;
 				CODE_SIGN_IDENTITY = "Developer ID Application";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 13;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
@@ -435,7 +435,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 13;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
@@ -461,6 +461,8 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 4.1.3;
+				PRODUCT_BUNDLE_IDENTIFIER = com.interceptsuite.ProxyBridge;
+				PRODUCT_NAME = "$(TARGET_NAME)";
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]" = "ProxyBridge Prod";
 				REGISTER_APP_GROUPS = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -475,10 +477,10 @@
 		8466A1F62EC63C5600A8C2E5 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = extension/extension.entitlements;
+				CODE_SIGN_ENTITLEMENTS = extension/extensionRelease.entitlements;
 				CODE_SIGN_IDENTITY = "Developer ID Application";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 13;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -503,7 +505,7 @@
 				);
 				MARKETING_VERSION = 4.1.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.interceptsuite.ProxyBridge.extension;
-				PRODUCT_NAME = "$(inherited)";
+				PRODUCT_NAME = com.interceptsuite.ProxyBridge.extension;
 				REGISTER_APP_GROUPS = YES;
 				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -518,7 +520,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 1B7672932F421ABA00B323D6 /* Signing-Config-ext.xcconfig */;
 			buildSettings = {
-				CURRENT_PROJECT_VERSION = 10;
+				CURRENT_PROJECT_VERSION = 13;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
@@ -541,6 +543,8 @@
 					"@executable_path/../../../../Frameworks",
 				);
 				MARKETING_VERSION = 4.1.3;
+				PRODUCT_BUNDLE_IDENTIFIER = com.interceptsuite.ProxyBridge.extension;
+				PRODUCT_NAME = com.interceptsuite.ProxyBridge.extension;
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]" = "ProxyBridge Extension Prod";
 				REGISTER_APP_GROUPS = YES;
 				SKIP_INSTALL = YES;

@@ -198,10 +198,10 @@ INT_PTR CALLBACK UpdateDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
         SetDlgItemTextW(dlg, IDCANCEL,       T(S_UPD_LATER));
         SetDlgItemTextW(dlg, IDC_UP_DONTASK, T(S_UPD_DONTASK));
         ShowWindow(GetDlgItem(dlg, IDC_UP_PROGRESS), SW_HIDE);
-        InitDarkMode(dlg);
+        InitLightTheme(dlg);
         return TRUE;
     }
-    PB_DARK_CTLCOLORS;
+    PB_LIGHT_CTLCOLORS;
     case WM_NOTIFY:
     {
         LPNMHDR nh = (LPNMHDR)lp;

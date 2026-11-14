@@ -56,7 +56,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmd, int show)
     g_api.SetEnabled = StubSetEnabled; g_api.SetTrafficLoggingEnabled = StubSetTraffic; g_api.SetLogEveryConnection = StubSetLogAll;
     g_api.SetLogCallback = StubSetLog; g_api.SetConnectionCallback = StubSetConn;
 
-    CreateDarkBrushes();
+    CreateThemeBrushes();
     WNDCLASSEXW wc; ZeroMemory(&wc, sizeof(wc));
     wc.cbSize = sizeof(wc); wc.lpfnWndProc = WndProc; wc.hInstance = hInst;
     wc.hIcon = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE); wc.hIconSm = wc.hIcon;

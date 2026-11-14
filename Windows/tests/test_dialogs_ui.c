@@ -35,7 +35,8 @@ static VOID CALLBACK PickTimer(HWND h, UINT m, UINT_PTR id, DWORD t)
 static HWND OpenRuleEditor(PBRule* r)
 {
     HWND d = CreateDialogParamW(g_hInst, MAKEINTRESOURCEW(IDD_RULE), NULL, RuleEditDlgProc, (LPARAM)r);
-    ShowWindow(d, SW_SHOW);          /* a hidden dialog reports every control as invisible */
+    /* STARTF_USESHOWWINDOW/SW_HIDE from a hidden test launcher overrides the first ShowWindow call. */
+    SetWindowPos(d, NULL, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_SHOWWINDOW);
     return d;
 }
 
@@ -44,7 +45,7 @@ int WINAPI wWinMain(HINSTANCE hInst, HINSTANCE hPrev, PWSTR cmd, int show)
     (void)hPrev; (void)cmd; (void)show;
     setvbuf(stdout, NULL, _IONBF, 0);
     g_hInst = hInst;
-    CreateDarkBrushes();
+    CreateThemeBrushes();
     wchar_t tmp[MAX_PATH]; GetTempPathW(MAX_PATH, tmp);
     wchar_t sub[64]; _snwprintf_s(sub, 64, _TRUNCATE, L"pbtest_dialogs_%lu", GetCurrentProcessId()); wcscat_s(tmp, MAX_PATH, sub);
     CreateDirectoryW(tmp, NULL); SetEnvironmentVariableW(L"APPDATA", tmp);

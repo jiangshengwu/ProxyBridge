@@ -59,8 +59,13 @@ typedef UINT32 (*PFN_GetFlows)(PBFlow*, UINT32);
 typedef BOOL   (*PFN_Start)(void);
 typedef BOOL   (*PFN_Stop)(void);
 
+typedef BOOL (*PFN_SetRuleName)(UINT32, const char*);
+typedef BOOL (*PFN_IsHealthy)(void);
+
 // resolved API table
 typedef struct {
+    PFN_SetRuleName SetRuleName;
+    PFN_IsHealthy IsHealthy;
     HMODULE                       dll;
     PFN_AddProxyConfig            AddProxyConfig;
     PFN_EditProxyConfig           EditProxyConfig;
@@ -130,6 +135,8 @@ static BOOL PB_LoadDirect(PBApi* api)
     PB_BIND(GetFlows,                 "GetFlows");
     PB_BIND(Start,                    "Start");
     PB_BIND(Stop,                     "Stop");
+    api->SetRuleName = (PFN_SetRuleName)(void*)GetProcAddress(api->dll, "ProxyBridge_SetRuleName");
+    api->IsHealthy = (PFN_IsHealthy)(void*)GetProcAddress(api->dll, "ProxyBridge_IsHealthy");
     #undef PB_BIND
 
     return TRUE;
