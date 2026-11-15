@@ -535,20 +535,11 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         // reset any rules pointing to this config to DIRECT so they don't silently go direct anyway
         var resetRuleCount = 0
         if var saved = UserDefaults.standard.array(forKey: "proxyRules") as? [[String: Any]] {
-            var changed = false
-            for i in saved.indices where (saved[i]["action"] as? String) == config.id {
-                saved[i]["action"] = "DIRECT"
-                changed = true
-                resetRuleCount += 1
-            }
-            if changed {
+            resetRuleCount = DefaultProxy.resetReferences(to: config.id, in: &saved)
+            if resetRuleCount > 0 {
                 let d = UserDefaults.standard
                 d.set(saved, forKey: "proxyRules")
                 d.set(saved, forKey: profileRulesKey(activeProfile))
-                LocalIPCClient.shared.syncRules(saved) { [weak self] success, _ in
-                    guard !success, let session = self?.tunnelSession else { return }
-                    RuleManager.resyncRules(session: session) { _, _ in }
-                }
             }
         }
         proxyConfigs.removeAll { $0.id == config.id }
@@ -561,8 +552,15 @@ class ProxyBridgeViewModel: NSObject, ObservableObject {
         let resetSuffix = resetRuleCount > 0 ? "; \(resetRuleCount) dependent rule(s) changed to DIRECT" : ""
         addLog("INFO", "Proxy config deleted: \(config.displayName)\(resetSuffix)")
         if let session = tunnelSession {
-            sendProxyConfigsToExtension(session: session)
-            RuleManager.resyncRules(session: session) { _, _ in }
+            // Keep the old proxy available until the extension has replaced rules that use it.
+            RuleManager.resyncRules(session: session) { [weak self] success, _ in
+                guard let self, self.tunnelSession === session else { return }
+                guard success else {
+                    self.addLog("ERROR", "Failed to sync rules after deleting proxy \(config.displayName)")
+                    return
+                }
+                self.sendProxyConfigsToExtension(session: session)
+            }
         }
     }
 

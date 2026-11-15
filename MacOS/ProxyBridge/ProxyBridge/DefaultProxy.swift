@@ -25,13 +25,26 @@ nonisolated enum DefaultProxy {
         return proxyIds.contains(a) ? a : nil
     }
 
-    // the rules with every "DEFAULT" action replaced by `target`
-    static func resolve(_ rules: [[String: Any]], to target: String) -> [[String: Any]] {
-        rules.map { rule in
-            guard (rule["action"] as? String) == action else { return rule }
-            var copy = rule
-            copy["action"] = target
-            return copy
+    static func resetReferences(to removedProxyId: String, in rules: inout [[String: Any]]) -> Int {
+        var count = 0
+        for i in rules.indices where rules[i]["action"] as? String == removedProxyId {
+            rules[i]["action"] = "DIRECT"
+            count += 1
+        }
+        return count
+    }
+
+    // Only resolved rules can be sent over IPC. Saved rules retain DEFAULT for future changes.
+    struct ResolvedRules {
+        let rules: [[String: Any]]
+
+        init(_ saved: [[String: Any]], defaultAction: String) {
+            rules = saved.map { rule in
+                guard (rule["action"] as? String) == DefaultProxy.action else { return rule }
+                var copy = rule
+                copy["action"] = defaultAction
+                return copy
+            }
         }
     }
 

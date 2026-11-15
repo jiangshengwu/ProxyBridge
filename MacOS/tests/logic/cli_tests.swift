@@ -153,17 +153,26 @@ t("effective default: no proxy at all means DIRECT", DefaultProxy.effectiveActio
 t("effective id is nil without a proxy", DefaultProxy.effectiveId(defaultId: nil, proxyIds: []) == nil)
 t("effective id is the proxy id", DefaultProxy.effectiveId(defaultId: "b", proxyIds: ["a", "b"]) == "b")
 let mixed: [[String: Any]] = [["action": "DEFAULT", "processNames": "curl"], ["action": "pinned", "processNames": "nc"], ["action": "BLOCK"], ["action": "DIRECT"]]
-let resolved = DefaultProxy.resolve(mixed, to: "p1")
+let resolved = DefaultProxy.ResolvedRules(mixed, defaultAction: "p1").rules
 t("a Default rule gets the proxy id", resolved[0]["action"] as? String == "p1")
 t("a pinned rule is left alone", resolved[1]["action"] as? String == "pinned")
 t("BLOCK and DIRECT are left alone", resolved[2]["action"] as? String == "BLOCK" && resolved[3]["action"] as? String == "DIRECT")
 t("the other fields of a Default rule are kept", resolved[0]["processNames"] as? String == "curl")
-t("Default resolves to DIRECT when there is no proxy", DefaultProxy.resolve(mixed, to: "DIRECT")[0]["action"] as? String == "DIRECT")
+t("Default resolves to DIRECT when there is no proxy", DefaultProxy.ResolvedRules(mixed, defaultAction: "DIRECT").rules[0]["action"] as? String == "DIRECT")
 t("the saved rules are not changed by resolving", mixed[0]["action"] as? String == "DEFAULT")
 t("usesDefault finds a Default rule", DefaultProxy.usesDefault(mixed))
 t("usesDefault is false without one", !DefaultProxy.usesDefault([["action": "BLOCK"], ["action": "p1"]]))
 t("a rule without an action is not a Default rule", !DefaultProxy.usesDefault([["processNames": "x"]]))
 t("DEFAULT, DIRECT and BLOCK are reserved", DefaultProxy.reservedActions == ["DEFAULT", "DIRECT", "BLOCK"])
+
+// Delete the marked default while one rule follows it and another pins it explicitly.
+var afterRemoval = mixed
+t("only the pinned rule is reset", DefaultProxy.resetReferences(to: "pinned", in: &afterRemoval) == 1)
+t("saved rule still follows the default", afterRemoval[0]["action"] as? String == "DEFAULT")
+let nextDefault = DefaultProxy.effectiveAction(defaultId: nil, proxyIds: ["remaining"])
+let ipcRules = DefaultProxy.ResolvedRules(afterRemoval, defaultAction: nextDefault).rules
+t("IPC uses the remaining proxy for the default rule after deletion",
+  ipcRules.compactMap { $0["action"] as? String } == ["remaining", "DIRECT", "BLOCK", "DIRECT"])
 
 func jsonWith(_ extra: String) -> Data { Data("{\"proxyConfigs\": [], \"proxyRules\": []\(extra)}".utf8) }
 t("a file without defaultProxyId has none", (try? CLIProfileLoader.parse(json: jsonWith("")))?.defaultProxyId == nil)

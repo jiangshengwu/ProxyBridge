@@ -462,7 +462,7 @@ The migration branch combines upstream macOS 4.1.3 (including CLI, per-profile D
 default proxy and tunnel repair) with the fork's connection outcomes, rule-name
 snapshots, containing-app matching, rule reordering, log filters/source separation,
 profile persistence, authenticated loopback IPC and configuration health recovery.
-The app and extension build number is 13. Full executable-path matching and the
+The app and extension build number is 14. Full executable-path matching and the
 upstream proxy-reply parsing fixes are retained.
 
 On macOS with Xcode installed, run from the repository root:

@@ -1149,7 +1149,7 @@ class AppProxyProvider: NETransparentProxyProvider {
             portStr = "unknown"
         }
 
-        if portNum == LocalIPCServer.port {
+        if LocalIPCServer.isListenerEndpoint(host: destination, port: portNum) {
             return false
         }
 
@@ -1724,8 +1724,6 @@ class AppProxyProvider: NETransparentProxyProvider {
 
             guard let datagrams = datagrams, !datagrams.isEmpty else { return }
             association.touch()
-
-            association.lastActivity = Date()
 
             var payloads: [Data] = []
             var endpoints: [NWEndpoint] = []

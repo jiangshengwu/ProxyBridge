@@ -4,6 +4,11 @@ import Network
 final class LocalIPCServer {
     static let shared = LocalIPCServer()
     static let port: UInt16 = 58223
+    private static let host = "127.0.0.1"
+
+    static func isListenerEndpoint(host: String, port: UInt16) -> Bool {
+        host == Self.host && port == Self.port
+    }
 
     private static let maxHeaderBytes = 16 * 1024
     private static let maxBodyBytes = 1024 * 1024
@@ -46,7 +51,7 @@ final class LocalIPCServer {
             let params = NWParameters.tcp
             params.allowLocalEndpointReuse = true
             let port = NWEndpoint.Port(rawValue: LocalIPCServer.port)!
-            params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: port)
+            params.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(Self.host), port: port)
             listener = try NWListener(using: params)
 
             listener?.stateUpdateHandler = { [weak self] state in

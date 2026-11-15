@@ -47,6 +47,11 @@ t("a list can mix a path and a name, other entry", matcher("/opt/example-app-a/b
 t("a path is not cut at a folder name that looks like the file name", matcher("/opt/example-app-a/bin", "*", "*").matchesProcess(workerA), false)
 
 // ports
+t("the IPC listener bypasses TCP rules", LocalIPCServer.isListenerEndpoint(host: "127.0.0.1", port: 58223), true)
+t("another local port still uses TCP rules", LocalIPCServer.isListenerEndpoint(host: "127.0.0.1", port: 443), false)
+for host in ["192.0.2.1", "2001:db8::1", "example.org", "127.0.0.1.example.org"] {
+    t("remote IPC port still uses TCP rules: \(host)", LocalIPCServer.isListenerEndpoint(host: host, port: 58223), false)
+}
 t("port in list", matcher("*", "*", "80,443,8000-8100").matchesPort(8050), true)
 t("port exact", matcher("*", "*", "80,443").matchesPort(443), true)
 t("port miss", matcher("*", "*", "80,443").matchesPort(81), false)

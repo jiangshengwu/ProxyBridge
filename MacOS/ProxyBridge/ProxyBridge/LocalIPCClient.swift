@@ -85,7 +85,8 @@ final class LocalIPCClient {
         }.resume()
     }
 
-    func syncRules(_ rules: [[String: Any]], completion: ((Bool, Int) -> Void)? = nil) {
+    func syncRules(_ resolved: DefaultProxy.ResolvedRules, completion: ((Bool, Int) -> Void)? = nil) {
+        let rules = resolved.rules
         let url = baseURL.appendingPathComponent("rules")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

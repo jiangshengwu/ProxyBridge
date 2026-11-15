@@ -122,7 +122,8 @@ struct RuleManager {
         defaultAction: String,
         completion: @escaping (Bool, Int) -> Void
     ) {
-        let rules = DefaultProxy.resolve(savedRules, to: defaultAction)
+        let resolved = DefaultProxy.ResolvedRules(savedRules, defaultAction: defaultAction)
+        let rules = resolved.rules
         let payload: [[String: Any]] = rules.map { rule in
             [
                 "name": rule["name"] as? String ?? "",
@@ -152,7 +153,7 @@ struct RuleManager {
                 }
             }
         }
-        LocalIPCClient.shared.syncRules(rules) { success, count in
+        LocalIPCClient.shared.syncRules(resolved) { success, count in
             if success { DispatchQueue.main.async { completion(true, count) } }
             else { sendViaProvider() }
         }
