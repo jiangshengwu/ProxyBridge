@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Portable LLVM-MinGW build. Run from WSL/Linux with TOOLCHAIN and WINDIVERT set.
+# BUILD_RELEASE=0 builds tests only; BUILD_TESTS=0 builds release binaries only.
 cd "$(dirname "${BASH_SOURCE[0]}")"
 TC="${TOOLCHAIN:?Set TOOLCHAIN to the LLVM-MinGW directory}/bin"
 WD="${WINDIVERT:?Set WINDIVERT to the extracted WinDivert SDK}"
@@ -9,7 +10,7 @@ RC="$TC/x86_64-w64-mingw32-windres"
 OUT="${OUTPUT_DIR:-$PWD/output/mingw-x64}"
 TEST="${TEST_DIR:-$PWD/tests/out/mingw-x64}"
 mkdir -p "$OUT" "$TEST"
-CORE=(src/ProxyBridge.c src/pb_util.c src/pb_process.c src/pb_rules.c src/pb_proxy.c src/pb_dns.c src/pb_socks5.c src/pb_http.c src/pb_conntrack.c src/pb_relay.c src/pb_sockmap.c)
+CORE=(src/ProxyBridge.c src/pb_util.c src/pb_process.c src/pb_rules.c src/pb_proxy.c src/pb_dns.c src/pb_dns_proxy.c src/pb_socks5.c src/pb_http.c src/pb_conntrack.c src/pb_relay.c src/pb_sockmap.c)
 CFLAGS=(-D_WIN32_WINNT=0x0601 -D_CRT_SECURE_NO_WARNINGS -Wno-unknown-pragmas -fms-extensions)
 CORE_FLAGS=(-DPROXYBRIDGE_EXPORTS -Isrc -I"$WD/include")
 CORE_LIBS=(-L"$WD/x64" -lWinDivert -lws2_32 -liphlpapi -ladvapi32)
@@ -27,7 +28,7 @@ for path in tests/test_*.c tests/core_tests.c tests/gui_tests.c; do
     echo "Building $name"
     extra=(); libs=(); flags=()
     case "$name" in
-      test_engine|test_rules_match|test_conntrack|test_flows|test_dns|test_proxy_protocols|core_tests)
+      test_engine|test_rules_match|test_conntrack|test_flows|test_dns|test_dns_proxy|test_proxy_protocols|core_tests)
         extra=("${CORE_OBJS[@]}"); flags=("${CORE_FLAGS[@]}"); libs=("${CORE_LIBS[@]}");;
       test_hosts|test_profile) extra=(gui/profile/profile.c); flags=(-DUNICODE -D_UNICODE); libs=(-luser32 -ladvapi32 -lshell32);;
       test_json|test_proto) ;;
@@ -40,6 +41,7 @@ for path in tests/test_*.c tests/core_tests.c tests/gui_tests.c; do
 done
 cp "$WD/x64/WinDivert.dll" "$TEST/"
 fi
+if [[ "${BUILD_RELEASE:-1}" != 1 ]]; then exit 0; fi
 echo 'Building release binaries'
 RELEASE=(-O2 -flto -DNDEBUG -ffunction-sections -fdata-sections -mguard=cf -fstack-protector-strong -Wl,--gc-sections,--strip-all,--dynamicbase,--nxcompat,--high-entropy-va)
 "$RC" src/core.rc -O coff -o "$TEST/core.res"

@@ -524,6 +524,7 @@ DWORD WINAPI local_proxy_server(LPVOID arg)
                     conn_config->is_ipv6 = FALSE;
 
                     UINT16 client_port = ntohs(client_addr.sin_port);
+                    conn_config->dns_proxy = dns_proxy_is_tcp(client_port, FALSE);
                     if (get_connection_full_x(client_port, FALSE, &conn_config->orig_dest_ip, &conn_config->orig_dest_port, &conn_config->proxy_config_id, &conn_config->pid, &conn_config->rule_id, 0) &&
                         relay_peer_ok_v4(client_addr.sin_addr.s_addr, conn_config->orig_dest_ip))
                     {
@@ -554,6 +555,7 @@ DWORD WINAPI local_proxy_server(LPVOID arg)
                     conn_config->is_ipv6 = TRUE;
 
                     UINT16 client_port = ntohs(client_addr6.sin6_port);
+                    conn_config->dns_proxy = dns_proxy_is_tcp(client_port, TRUE);
                     if (get_connection_full_v6_x(client_port, FALSE, conn_config->orig_dest_ip6, &conn_config->orig_dest_port, &conn_config->proxy_config_id, &conn_config->pid, &conn_config->rule_id, 0) &&
                         relay_peer_ok_v6(&client_addr6.sin6_addr, conn_config->orig_dest_ip6))
                     {
@@ -604,6 +606,7 @@ DWORD WINAPI connection_handler(LPVOID arg)
 static DWORD WINAPI connection_handler_impl(LPVOID arg)
 {
     CONNECTION_CONFIG *config = (CONNECTION_CONFIG *)arg;
+    if (config->dns_proxy) { dns_proxy_tcp_client(config); free(config); return 0; }
     SOCKET client_sock = config->client_socket;
     UINT32 dest_ip = config->orig_dest_ip;
     UINT16 dest_port = config->orig_dest_port;
@@ -911,8 +914,9 @@ DWORD WINAPI transfer_handler(LPVOID arg)
 // per-connection buffer instead made fast transfers slow under load (measured), so buffers stay
 // full size and only busy directions own one.
 //
-// Semantics are unchanged: each direction copies recv -> send; when either direction ends (EOF
-// or error) both sockets are shut down and closed once both directions have drained.
+// Each direction copies recv -> send. EOF propagates FIN only to the destination's send side,
+// after all bytes in that direction have drained; the reverse direction stays alive. Both
+// sockets are closed once both directions finish. Errors and pool stop still abort both sides.
 // The blocking one_way_relay/transfer_handler path stays as the fallback if the pool cannot start.
 // ============================================================================================
 #define RELAY_BUF_SIZE   65536
@@ -1014,6 +1018,17 @@ static void relay_dir_end(RELAY_DIR *d, DWORD error)
     relay_release(rc);
 }
 
+// A peer that has no more bytes to send can still receive a delayed response (TCP half-close).
+// Do not cancel the sibling's receive/send here: it may be waiting for that response or still
+// draining queued data. This direction owns a reference until FIN propagation has completed.
+static void relay_dir_eof(RELAY_DIR *d)
+{
+    RELAY_CONN *rc = d->rc;
+    if (shutdown(d->dst, SD_SEND) == SOCKET_ERROR)
+        relay_finish(rc, WSAGetLastError());
+    relay_release(rc);
+}
+
 static BOOL relay_io_ok(int rc_, int err) { return !(rc_ == SOCKET_ERROR && err != WSA_IO_PENDING); }
 
 // Idle: give the buffer back and wait for readability with a zero-byte receive.
@@ -1032,7 +1047,7 @@ static BOOL relay_post_wait(RELAY_DIR *d)
 // Data is (or was) available: read it into the direction's buffer.
 static BOOL relay_post_read(RELAY_DIR *d)
 {
-    if (d->buf == NULL && (d->buf = relay_buf_get()) == NULL) return FALSE;
+    if (d->buf == NULL && (d->buf = relay_buf_get()) == NULL) { WSASetLastError(WSAENOBUFS); return FALSE; }
     WSABUF wb; wb.len = RELAY_BUF_SIZE; wb.buf = d->buf;
     DWORD flags = 0;
     ZeroMemory(&d->ov, sizeof(d->ov));
@@ -1067,12 +1082,12 @@ static DWORD WINAPI relay_worker(LPVOID arg)
             posted = relay_post_read(d);
             break;
         case RS_READ:
-            if (n == 0) { relay_dir_end(d, 0); continue; }   // EOF
+            if (n == 0) { relay_dir_eof(d); continue; }   // EOF, not a full-duplex close
             d->len = n; d->off = 0;
             posted = relay_post_send(d);
             break;
         default:                                       // RS_SEND
-            if (n == 0) { relay_dir_end(d, 0); continue; }
+            if (n == 0) { relay_dir_end(d, WSAECONNRESET); continue; } // send made no progress
             InterlockedExchangeAdd64(&d->bytes, (LONG64)n);
             d->off += n;
             if (d->off < d->len) posted = relay_post_send(d);

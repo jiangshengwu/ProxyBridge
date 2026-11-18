@@ -195,6 +195,9 @@ DWORD WINAPI packet_processor(LPVOID arg)
         WinDivertHelperParsePacket(packet, packet_len, &ip_header, &ipv6_header, NULL,
             NULL, NULL, &tcp_header, &udp_header, NULL, NULL, NULL, NULL);
 
+        // DNS precedes Local DIRECT / UDP caches, without blocking capture on I/O.
+        if (udp_header && dns_proxy_intercept(packet, packet_len, &addr)) continue;
+
         if (ip_header == NULL)
         {
             if (ipv6_header == NULL) { continue; }
@@ -462,10 +465,11 @@ DWORD WINAPI packet_processor(LPVOID arg)
                 RuleAction action6;
                 DWORD pid6 = 0;
                 UINT32 proxy_config_id6 = 0;
-                action6 = check_process_rule_v6((const UINT8*)ipv6_header->SrcAddr, sp, (const UINT8*)ipv6_header->DstAddr, dp, FALSE, &pid6, &proxy_config_id6);
+                BOOL dns6 = dp == 53 && dns_proxy_tcp_candidate(TRUE, ipv6_header->SrcAddr, sp, &proxy_config_id6, &pid6);
+                action6 = dns6 ? RULE_ACTION_PROXY : check_process_rule_v6((const UINT8*)ipv6_header->SrcAddr, sp, (const UINT8*)ipv6_header->DstAddr, dp, FALSE, &pid6, &proxy_config_id6);
 
                 // ::1 IPv6 loopback - same per-rule "localhost via proxy" flag as IPv4 127.
-                if (action6 == RULE_ACTION_PROXY && !g_tl_rule_localhost)
+                if (action6 == RULE_ACTION_PROXY && !dns6 && !g_tl_rule_localhost)
                 {
                     const UINT8 *dst6 = (const UINT8*)ipv6_header->DstAddr;
                     // check for ::1 (loopback) or ::ffff:127.x.x.x (v4-mapped loopback)
@@ -532,6 +536,7 @@ DWORD WINAPI packet_processor(LPVOID arg)
                 else if (action6 == RULE_ACTION_PROXY)
                 {
                     add_connection_v6(sp, FALSE, (const UINT8*)ipv6_header->SrcAddr, (const UINT8*)ipv6_header->DstAddr, dp, proxy_config_id6, pid6, g_tl_rule_id);
+                    if (dns6) dns_proxy_mark_tcp(sp, TRUE);
                     port_set_decided(sp);
                     tcp_header->DstPort = htons(g_local_relay_port);
 
@@ -912,10 +917,11 @@ DWORD WINAPI packet_processor(LPVOID arg)
                 DWORD pid = 0;
                 UINT32 proxy_config_id = 0;
 
-                action = check_process_rule(src_ip, src_port, orig_dest_ip, orig_dest_port, FALSE, &pid, &proxy_config_id);
+                BOOL dns_tcp = orig_dest_port == 53 && dns_proxy_tcp_candidate(FALSE, &src_ip, src_port, &proxy_config_id, &pid);
+                action = dns_tcp ? RULE_ACTION_PROXY : check_process_rule(src_ip, src_port, orig_dest_ip, orig_dest_port, FALSE, &pid, &proxy_config_id);
 
                 BYTE orig_dest_first_octet = (orig_dest_ip >> 0) & 0xFF;
-                if (action == RULE_ACTION_PROXY && !g_tl_rule_localhost && orig_dest_first_octet == 127)
+                if (action == RULE_ACTION_PROXY && !dns_tcp && !g_tl_rule_localhost && orig_dest_first_octet == 127)
                     action = RULE_ACTION_DIRECT;
 
                 // Override PROXY to DIRECT for criticl ips
@@ -984,6 +990,7 @@ DWORD WINAPI packet_processor(LPVOID arg)
                 else if (action == RULE_ACTION_PROXY)
             {
                 add_connection(src_port, FALSE, src_ip, orig_dest_ip, orig_dest_port, proxy_config_id, pid, g_tl_rule_id);
+                if (dns_tcp) dns_proxy_mark_tcp(src_port, FALSE);
                 // Mark this port as decided (not direct) so subsequent packets from
                 // the same source port skip the rule check.  The is_connection_tracked
                 // branch above handles the actual per-packet redirect.
@@ -1331,6 +1338,7 @@ PROXYBRIDGE_API BOOL ProxyBridge_Start(void)
     // Socket-layer events give the owner PID of each new connection without a table scan.
     // Optional: if it cannot be opened the lookups fall back to the table.
     sockmap_start();
+    if (!dns_proxy_start()) log_message("[DNS] Could not start DNS fallback workers; original DNS routing retained");
 
     // WINDIVERT_PARAM_QUEUE_LENGTH: max packets in queue (range 32–16384).
     // Under heavy upload the kernel enqueues bursts of outbound packets faster
@@ -1352,6 +1360,7 @@ PROXYBRIDGE_API BOOL ProxyBridge_Start(void)
         if (packet_thread[i] == NULL)
         {
             running = FALSE;
+            dns_proxy_stop();
             for (int j = 0; j < i; j++)
             {
                 if (packet_thread[j] != NULL)
@@ -1409,6 +1418,8 @@ PROXYBRIDGE_API BOOL ProxyBridge_Stop(void)
     running = FALSE;
 
     sockmap_stop();
+    // Drain DNS injection before closing WinDivert; wake TCP DNS handlers too.
+    dns_proxy_stop();
 
     if (windivert_handle != INVALID_HANDLE_VALUE)
     {

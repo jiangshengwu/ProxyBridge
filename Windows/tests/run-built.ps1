@@ -2,7 +2,7 @@
 param([string]$OutputPath = "$PSScriptRoot/out/mingw-x64")
 $ErrorActionPreference = 'Stop'
 $OutputPath = (Resolve-Path -LiteralPath $OutputPath).Path
-$names = @('test_cli','test_conntrack','test_dialogs_ui','test_dns','test_engine','test_flows',
+$names = @('test_cli','test_conntrack','test_dialogs_ui','test_dns','test_dns_proxy','test_engine','test_flows',
     'test_gui_misc','test_hosts','test_json','test_main_ui','test_profile','test_proto',
     'test_proxy_protocols','test_rules_match','test_rules_ui','test_service','core_tests','gui_tests')
 $results = foreach ($name in $names) {

@@ -132,6 +132,7 @@ typedef struct CONNECTION_INFO {
     UINT32 orig_dest_ip;
     UINT16 orig_dest_port;
     BOOL   is_tracked;
+    BOOL   dns_proxy;          // TCP/53 owned by the DNS fallback handler
     ULONGLONG last_activity;
     UINT32 proxy_config_id;
     BOOL   is_ipv6;
@@ -158,6 +159,7 @@ typedef struct {
     UINT8  orig_dest_ip6[16];
     DWORD  pid;
     UINT32 rule_id;
+    BOOL   dns_proxy;
 } CONNECTION_CONFIG;
 
 typedef struct {
@@ -363,6 +365,31 @@ BOOL dns_parse_name(const UINT8 *msg, int msg_len, int *offset, char *dst, int d
 void snoop_dns_response(const UINT8 *payload, int payload_len);
 void cleanup_stale_dns_cache(void);
 void flush_dns_resolver_cache(void);
+
+// ---- pb_dns_proxy.c: bounded, local-first DNS with remote TCP fallback ----
+#define PB_DNS_MAX 16384
+typedef struct {
+    char name[256];
+    UINT16 type;
+    int end;
+} PB_DNS_QUESTION;
+BOOL dns_question(const UINT8 *data, int len, PB_DNS_QUESTION *out);
+BOOL dns_local_name(const char *name);
+BOOL dns_response_valid(const UINT8 *query, int qlen, const UINT8 *answer, int alen);
+BOOL dns_response_retry(const UINT8 *answer, int len);
+BOOL dns_proxy_policy(const char *process, BOOL system_dns, const char *domain, UINT32 *config_id);
+BOOL dns_proxy_start(void);
+void dns_proxy_stop(void);
+void dns_proxy_rules_changed(void);
+BOOL dns_proxy_intercept(const UINT8 *packet, UINT len, const WINDIVERT_ADDRESS *addr);
+BOOL dns_proxy_tcp_candidate(BOOL v6, const void *src, UINT16 port, UINT32 *config_id, DWORD *pid);
+void dns_proxy_mark_tcp(UINT16 port, BOOL v6);
+BOOL dns_proxy_is_tcp(UINT16 port, BOOL v6);
+void dns_proxy_tcp_client(const CONNECTION_CONFIG *config);
+int dns_proxy_exchange(const UINT8 *query, int qlen, UINT8 *answer, int cap,
+                       const struct sockaddr *resolver, int resolver_len, BOOL tcp, const PROXY_CONFIG *proxy);
+int dns_proxy_make_reply(const UINT8 *packet, UINT len, const UINT8 *answer, int alen,
+                         UINT8 *out, UINT cap, WINDIVERT_ADDRESS *addr);
 
 // ---- pb_socks5.c ----
 int socks5_read_connect_reply(SOCKET s, int *reply);

@@ -1158,6 +1158,7 @@ void update_has_active_rules(void)
     if (has_domain && !g_has_domain_rules && running)
         flush_dns_resolver_cache();
     g_has_domain_rules = has_domain;
+    dns_proxy_rules_changed();
 }
 
 

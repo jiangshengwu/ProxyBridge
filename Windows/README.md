@@ -209,7 +209,8 @@ ProxyBridge supports multiple proxy server configurations simultaneously. Each p
    `;` separates the entries (up to 8191 characters).
 
    Domain names are learned from the application's own DNS lookups, so they only work with unencrypted DNS
-   (turn off "Secure DNS" / DNS over HTTPS in the browser). In profile files the entries are saved as
+   (turn off "Secure DNS" / DNS over HTTPS in the browser). UDP replies and intercepted TCP DNS replies feed
+   the same domain map. In profile files the entries are saved as
    `TargetHosts` (IPs) and `TargetDomains` (domain names), which other ProxyBridge apps read the same way.
 
    **Target Ports (Optional):**
@@ -226,6 +227,34 @@ ProxyBridge supports multiple proxy server configurations simultaneously. Each p
    - **BLOCK** - Block all internet access
 
 4. Click **Save Rule** to apply
+
+#### Windows DNS fallback (no TUN required)
+
+With an enabled PROXY rule, DNS queries from eligible apps are handled before the LAN DIRECT rule.
+The original resolver is tried first (400 ms); valid answers, NODATA and NXDOMAIN are preserved.
+On timeout, SERVFAIL, REFUSED, malformed replies or truncation, ProxyBridge retries DNS over TCP through
+that rule's SOCKS5/HTTP proxy: Cloudflare `1.1.1.1:53`, then Quad9 `9.9.9.9:53` if necessary. The proxy
+must permit CONNECT to TCP port 53. These are remote queries carried inside the configured proxy tunnel;
+there is no new direct-to-public-DNS path and Windows network-adapter DNS settings are not changed.
+
+Both UDP and TCP DNS are supported for IPv4/IPv6 clients, including multiple queries on one TCP session.
+Large UDP answers are returned with TC so the client retries over TCP. Successful fallback logs contain
+`[DNS] ... local DNS failed; resolved through ...` in Activity Log. Keep **Let proxy resolve DNS (send
+hostname)** enabled if the proxy should also receive the recovered name for subsequent connections.
+That checkbox controls SOCKS/HTTP destination naming, not the initial DNS fallback.
+
+Single-label, reverse-DNS and common local suffixes (`.local`, `.lan`, `.home`, `.internal`, `.corp`, etc.)
+stay on the original DNS path. Explicit broad/domain DIRECT or BLOCK rules are respected; IP-only rules
+cannot be used to classify a name before it has resolved. Unknown-owner queries are not intercepted.
+Windows Dnscache may issue queries on behalf of many apps without exposing the originating app: for
+those shared queries only failed local resolution falls back, using the first enabled applicable proxy
+rule. Successful shared DNS responses can benefit other applications too; per-app attribution is not
+possible for those queries. Pausing/disabling proxy rules stops interception of new DNS queries.
+
+The worker pool/queue and TCP DNS sessions are bounded; stop cancels outstanding I/O before driver unload.
+The internal name cache is populated from validated responses. When DNS fallback first becomes eligible,
+the Windows resolver cache is flushed once to evict cached negative replies (no DNS settings are changed).
+Application-private DNS caches and app-managed encrypted DNS are not intercepted. macOS is unchanged.
 
 #### Exporting and Importing Rules
 

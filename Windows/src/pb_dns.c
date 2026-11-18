@@ -160,6 +160,7 @@ BOOL dns_parse_name(const UINT8 *msg, int msg_len, int *offset, char *dst, int d
             continue;
         }
         int label_len = (int)b;
+        if (label_len > 63) return FALSE; // reserved DNS label encodings are not ordinary labels
         pos++;
         if (pos + label_len > msg_len)       return FALSE;
         if (out + label_len + 2 >= dst_len)  return FALSE;

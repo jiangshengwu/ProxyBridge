@@ -2,7 +2,8 @@
 // loopback socket pairs, and the flow list that ProxyBridge_GetFlows() returns follows it:
 //   - a proxied TCP connection appears with its owner (pid + process name), destination and proxy id
 //   - the Sent / Received counters equal the bytes that were forwarded in each direction
-//   - it disappears when either side closes, and nothing is leaked (the relay count returns to zero)
+//   - FIN closes only that direction; delayed reverse data is drained before final cleanup
+//   - reset and pool stop still cancel both directions, without leaks or duplicate close events
 //   - the caller's limit is respected, bad arguments are harmless
 // No driver is opened and nothing leaves the machine.
 #include "pb_internal.h"
@@ -31,6 +32,11 @@ static BOOL make_pair(SOCKET* a, SOCKET* b)
     if (connect(*a, (struct sockaddr*)&sa, sizeof(sa))) { closesocket(ls); closesocket(*a); return FALSE; }
     *b = accept(ls, NULL, NULL);
     closesocket(ls);
+    DWORD timeout = 4000;
+    setsockopt(*a, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+    setsockopt(*a, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
+    setsockopt(*b, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+    setsockopt(*b, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
     return *b != INVALID_SOCKET;
 }
 
@@ -40,11 +46,16 @@ static BOOL recv_n_bytes(SOCKET s, int n) { char buf[4096]; while (n > 0) { int 
 // polls the engine until `pred` holds or ~4 s pass
 static PB_FLOW g_f[PB_FLOWS_MAX];
 static volatile LONG snapshot_closed;
+static volatile LONG half_closed, half_failed;
 static void capture_snapshot(const char *proc, DWORD pid, const char *ip, UINT16 port, const char *info)
 {
     (void)proc; (void)pid; (void)ip; (void)port;
     if (strstr(info, "status=CLOSED") && strstr(info, "rule=R17 Original browser") && strstr(info, "match=APP:C:\\Apps\\*"))
         InterlockedIncrement(&snapshot_closed);
+    if (strstr(info, "rule=R100 Half-close")) {
+        if (strstr(info, "status=CLOSED")) InterlockedIncrement(&half_closed);
+        if (strstr(info, "IOCP relay failed")) InterlockedIncrement(&half_failed);
+    }
 }
 static UINT32  g_n;
 static BOOL wait_flows(UINT32 want, UINT64 sent, UINT64 recv)
@@ -56,6 +67,127 @@ static BOOL wait_flows(UINT32 want, UINT64 sent, UINT64 recv)
         Sleep(10);
     }
     return FALSE;
+}
+
+static void wait_drained(void)
+{
+    CHECK(wait_flows(0, 0, 0));
+    for (int i = 0; i < 400 && g_active_relays > 0; i++) Sleep(10);
+    CHECK(g_active_relays == 0);
+}
+
+static FLOW_META half_meta(void)
+{
+    FLOW_META m = {0}; m.pid = GetCurrentProcessId(); m.port = 443;
+    m.log_context.rule_id = 100;
+    strcpy_s(m.log_context.rule_name, sizeof(m.log_context.rule_name), "Half-close");
+    return m;
+}
+
+/* Patterned, multi-buffer payload: verify content and order, not just byte counts. */
+static BOOL pattern_io(SOCKET s, int count, BOOL sending)
+{
+    unsigned char buf[4096]; int offset = 0;
+    while (offset < count) {
+        int n = count - offset; if (n > (int)sizeof(buf)) n = sizeof(buf);
+        if (sending) for (int i = 0; i < n; i++) buf[i] = (unsigned char)((offset + i) * 31 + 7);
+        int done = sending ? send(s, (char*)buf, n, 0) : recv(s, (char*)buf, n, 0);
+        if (done <= 0) return FALSE;
+        if (!sending) for (int i = 0; i < done; i++)
+            if (buf[i] != (unsigned char)((offset + i) * 31 + 7)) return FALSE;
+        offset += done;
+    }
+    return TRUE;
+}
+
+typedef struct { SOCKET socket; int count; } SendJob;
+static DWORD WINAPI send_and_fin(LPVOID arg)
+{
+    SendJob *job = (SendJob*)arg;
+    return pattern_io(job->socket, job->count, TRUE) && shutdown(job->socket, SD_SEND) == 0 ? 0 : 1;
+}
+
+/* Both orientations matter: app FIN before a delayed response, and proxy FIN while
+   the app still has a large upload. The other receive must remain alive in both. */
+static void test_half_close(BOOL app_first)
+{
+    SOCKET app, rc, rp, proxy; char byte;
+    BOOL paired = make_pair(&app, &rc) && make_pair(&rp, &proxy);
+    CHECK(paired); if (!paired) return;
+    FLOW_META m = half_meta();
+    LONG closed_before = half_closed, failed_before = half_failed;
+    CHECK(relay_start(rc, rp, &m));
+    SOCKET first = app_first ? app : proxy, other = app_first ? proxy : app;
+    CHECK(pattern_io(first, 4097, TRUE));
+    CHECK(shutdown(first, SD_SEND) == 0);
+    CHECK(pattern_io(other, 4097, FALSE));
+    CHECK(recv(other, &byte, 1, 0) == 0);  /* FIN arrives after all preceding bytes */
+    CHECK(wait_flows(1, app_first ? 4097 : 0, app_first ? 0 : 4097));
+    CHECK(half_closed == closed_before);  /* half-close is not a terminal event */
+    Sleep(50);                           /* response is deliberately not ready at FIN */
+    SendJob job = {other, 524325};
+    HANDLE sender = CreateThread(NULL, 0, send_and_fin, &job, 0, NULL);
+    CHECK(sender != NULL);
+    if (sender) {
+        CHECK(pattern_io(first, job.count, FALSE));
+        CHECK(recv(first, &byte, 1, 0) == 0);
+        DWORD result = 1;
+        DWORD waited = WaitForSingleObject(sender, 10000);
+        CHECK(waited == WAIT_OBJECT_0);
+        if (waited != WAIT_OBJECT_0) ExitProcess(2); /* never leave a thread using stack storage */
+        CHECK(GetExitCodeThread(sender, &result) && result == 0);
+        CloseHandle(sender);
+    }
+    closesocket(app); closesocket(proxy);
+    wait_drained();
+    CHECK(half_closed == closed_before + 1);
+    CHECK(half_failed == failed_before);
+}
+
+static void test_half_close_abort(BOOL stop_pool)
+{
+    SOCKET app, rc, rp, proxy; char byte;
+    BOOL paired = make_pair(&app, &rc) && make_pair(&rp, &proxy);
+    CHECK(paired); if (!paired) return;
+    FLOW_META m = half_meta(); LONG closed_before = half_closed, failed_before = half_failed;
+    CHECK(relay_start(rc, rp, &m));
+    CHECK(shutdown(app, SD_SEND) == 0);
+    CHECK(recv(proxy, &byte, 1, 0) == 0);
+    CHECK(wait_flows(1, 0, 0));
+    if (stop_pool) {
+        relay_pool_stop();
+        CHECK(recv(app, &byte, 1, 0) <= 0);
+    } else {
+        struct linger abortive = {1, 0};
+        CHECK(setsockopt(proxy, SOL_SOCKET, SO_LINGER, (char*)&abortive, sizeof(abortive)) == 0);
+        closesocket(proxy); proxy = INVALID_SOCKET;
+        CHECK(recv(app, &byte, 1, 0) <= 0);
+    }
+    wait_drained();
+    CHECK(half_closed == closed_before + (stop_pool ? 1 : 0));
+    CHECK(half_failed == failed_before + (stop_pool ? 0 : 1)); /* IOCP may report a Win32 or WSA error */
+    closesocket(app); if (proxy != INVALID_SOCKET) closesocket(proxy);
+    if (stop_pool) CHECK(relay_pool_start());
+}
+
+static void test_simultaneous_fin(void)
+{
+    LONG closed_before = half_closed, failed_before = half_failed;
+    for (int i = 0; i < 32; i++) {
+        SOCKET app, rc, rp, proxy; char byte;
+        BOOL paired = make_pair(&app, &rc) && make_pair(&rp, &proxy);
+        CHECK(paired); if (!paired) return;
+        FLOW_META m = half_meta();
+        CHECK(relay_start(rc, rp, &m));
+        CHECK(shutdown(app, SD_SEND) == 0);
+        CHECK(shutdown(proxy, SD_SEND) == 0);
+        CHECK(recv(app, &byte, 1, 0) == 0);
+        CHECK(recv(proxy, &byte, 1, 0) == 0);
+        closesocket(app); closesocket(proxy);
+    }
+    wait_drained();
+    CHECK(half_closed == closed_before + 32); /* exactly once, despite racing workers */
+    CHECK(half_failed == failed_before);
 }
 
 int main(void)
@@ -104,19 +236,26 @@ int main(void)
     CHECK(g_n == 2 && g_f[0].id != id && g_f[0].is_ipv6 && !strcmp(g_f[0].host, "::1") && g_f[1].id == id && g_f[1].sent == 1000);
     { PB_FLOW lim[1]; CHECK(ProxyBridge_GetFlows(lim, 1) == 1); }                          /* the caller's limit is respected */
 
-    /* closing the app side ends the flow; the other one is untouched */
+    /* app FIN propagates, but reverse traffic remains possible until proxy FIN */
     closesocket(app);
-    CHECK(wait_flows(1, 0, 0) || g_n == 1);
-    CHECK(g_n == 1 && g_f[0].id != id);
     char c; CHECK(recv(proxy, &c, 1, 0) <= 0);                                              /* the proxy side saw the close too */
     closesocket(proxy);
+    CHECK(wait_flows(1, 0, 0));
+    CHECK(g_n == 1 && g_f[0].id != id);
 
     closesocket(app2);
+    CHECK(recv(px2, &c, 1, 0) == 0);
+    closesocket(px2);
     CHECK(wait_flows(0, 0, 0));
     for (int i = 0; i < 300 && g_active_relays > 0; i++) Sleep(10);
     CHECK(g_active_relays == 0);                                                            /* nothing leaked */
     CHECK(snapshot_closed == 1);  /* IOCP close event retains the decision-time rule snapshot */
-    closesocket(px2);
+
+    test_half_close(TRUE);
+    test_half_close(FALSE);
+    test_half_close_abort(FALSE);
+    test_half_close_abort(TRUE);
+    test_simultaneous_fin();
 
     relay_pool_stop();
     CHECK(relay_flows_snapshot(g_f, PB_FLOWS_MAX) == 0);

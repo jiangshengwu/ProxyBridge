@@ -51,6 +51,7 @@ void add_connection(UINT16 src_port, BOOL is_udp, UINT32 src_ip, UINT32 dest_ip,
                 existing->proxy_config_id != proxy_config_id) existing->udp_log_state = 0;
             rev_unlink(existing);   // dest may change (port reuse) - re-key the reverse index
             existing->is_ipv6 = FALSE;
+            existing->dns_proxy = FALSE;
             existing->pid = pid;
             existing->rule_id = rule_id;
             existing->src_ip = src_ip;
@@ -106,6 +107,7 @@ void add_connection_v6(UINT16 src_port, BOOL is_udp, const UINT8 src_ip6[16], co
                 existing->proxy_config_id != proxy_config_id) existing->udp_log_state = 0;
             rev_unlink(existing);   // dest may change (port reuse) - re-key the reverse index
             existing->is_ipv6 = TRUE;
+            existing->dns_proxy = FALSE;
             existing->pid = pid;
             existing->rule_id = rule_id;
             memcpy(existing->src_ip6, src_ip6, 16);
